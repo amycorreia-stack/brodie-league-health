@@ -95,39 +95,45 @@ export default async function MyDay({
 
   const lmId = lm.id;
 
-  const { data: xpRow } = await sb
+  // For LMs viewing their own day, use the user-scoped client (RLS allows
+  // them to read their own rows). For admins viewing-as another LM, use the
+  // admin client to sidestep RLS entirely — they wouldn't be viewing-as if
+  // they weren't authorized in the first place.
+  const dataClient = viewingAs ? createAdminClient() : sb;
+
+  const { data: xpRow } = await dataClient
     .from("lm_xp_totals")
     .select("total_xp, max_xp, pct, rank_overall, breakdown")
     .eq("lm_id", lmId)
     .eq("snapshot_date", today)
     .maybeSingle();
 
-  const { data: yesterdayRow } = await sb
+  const { data: yesterdayRow } = await dataClient
     .from("lm_xp_totals")
     .select("pct")
     .eq("lm_id", lmId)
     .eq("snapshot_date", ymd(daysAgo(new Date(), 1)))
     .maybeSingle();
 
-  const { data: trend } = await sb
+  const { data: trend } = await dataClient
     .from("lm_xp_totals")
     .select("snapshot_date, pct")
     .eq("lm_id", lmId)
     .gte("snapshot_date", sevenAgo)
     .order("snapshot_date", { ascending: true });
 
-  const { data: actions } = await sb
+  const { data: actions } = await dataClient
     .from("daily_action_items")
     .select("id, title, detail, severity, app_id, resolved_at, metrics:metric_id(slug, scoring_rule)")
     .eq("lm_id", lmId)
     .eq("snapshot_date", today)
     .order("severity", { ascending: true });
 
-  const { data: apps } = await sb.from("apps").select("id, slug, name");
+  const { data: apps } = await dataClient.from("apps").select("id, slug, name");
   const appNameById = new Map((apps ?? []).map((a: { id: string; name: string }) => [a.id, a.name]));
   const appNameBySlug = new Map((apps ?? []).map((a: { slug: string; name: string }) => [a.slug, a.name]));
 
-  const { data: recentUnlocks } = await sb
+  const { data: recentUnlocks } = await dataClient
     .from("lm_achievements")
     .select("unlocked_at, achievements!inner(slug, name, icon)")
     .eq("lm_id", lmId)
