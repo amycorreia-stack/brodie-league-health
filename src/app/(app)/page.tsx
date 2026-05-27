@@ -3,7 +3,7 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { ymd, daysAgo } from "@/lib/source-apps/util";
 import { scoreColor, scoreBg } from "@/lib/colors";
-import { ActionItemRow } from "@/components/ActionItemRow";
+import { AppCard } from "@/components/AppCard";
 import { LeaderboardOptInToggle } from "@/components/LeaderboardOptInToggle";
 import { TierBadge, StreakBadge, ChampionRibbon } from "@/components/GamificationBadges";
 import { ViewAsBanner, ViewAsSwitcher } from "@/components/ViewAs";
@@ -228,65 +228,52 @@ export default async function MyDay({
         </section>
       )}
 
-      <section>
-        <h2 className="text-base font-semibold mb-3">By app</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <section className="space-y-3">
+        <h2 className="text-base font-semibold">By app</h2>
+        {Object.keys(breakdown).length === 0 && (
+          <p className="text-glass-text-secondary">No data yet. Admin needs to run a sync.</p>
+        )}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {Object.entries(breakdown).map(([slug, v]) => {
-            const p = Math.round((v.score / Math.max(v.max, 1)) * 100);
+            const appActionsForSlug = (actions ?? [])
+              .filter((a) => {
+                const it = a as unknown as { app_id: string };
+                return appNameBySlug.get(slug) === appNameById.get(it.app_id);
+              })
+              .map((a) => {
+                const it = a as unknown as {
+                  id: string;
+                  title: string;
+                  detail: string | null;
+                  severity: string;
+                  app_id: string;
+                  resolved_at: string | null;
+                  metrics: { slug: string; scoring_rule: { type?: string; xp_per_unit?: number } } | null;
+                };
+                const rule = it.metrics?.scoring_rule ?? {};
+                const xpReward = rule.type === "reward_on_resolve" ? Number(rule.xp_per_unit ?? 0) : 0;
+                return {
+                  id: it.id,
+                  title: it.title,
+                  detail: it.detail,
+                  severity: it.severity,
+                  resolved_at: it.resolved_at,
+                  xpReward,
+                };
+              });
             return (
-              <div key={slug} className={`rounded-xl border p-4 ${scoreBg(p)}`}>
-                <p className="text-glass-text-tertiary text-[10px] uppercase tracking-wider font-semibold">{appNameBySlug.get(slug) ?? slug}</p>
-                <p className={`text-2xl font-semibold mt-1 ${scoreColor(p)}`}>{p}%</p>
-                <p className="text-glass-text-tertiary text-xs mt-0.5">{Math.round(v.score)} / {Math.round(v.max)} pts</p>
-              </div>
-            );
-          })}
-          {Object.keys(breakdown).length === 0 && (
-            <p className="text-glass-text-secondary col-span-full">No data yet. Admin needs to run a sync.</p>
-          )}
-        </div>
-      </section>
-
-      <section>
-        <h2 className="text-base font-semibold mb-3">
-          Today&apos;s focus
-          {actions?.length ? (
-            <span className="text-glass-text-tertiary text-sm ml-2 font-normal">
-              {actions.filter((a: { resolved_at: string | null }) => !a.resolved_at).length} open
-            </span>
-          ) : null}
-        </h2>
-        <ul className="space-y-2">
-          {(actions ?? []).map((a) => {
-            const item = a as unknown as {
-              id: string;
-              title: string;
-              detail: string | null;
-              severity: string;
-              app_id: string;
-              resolved_at: string | null;
-              metrics: { slug: string; scoring_rule: { type?: string; xp_per_unit?: number } } | null;
-            };
-            const rule = item.metrics?.scoring_rule ?? {};
-            const xpReward = rule.type === "reward_on_resolve" ? Number(rule.xp_per_unit ?? 0) : 0;
-            return (
-              <ActionItemRow
-                key={item.id}
-                id={item.id}
-                title={item.title}
-                detail={item.detail}
-                severity={item.severity}
-                appName={appNameById.get(item.app_id) ?? ""}
-                resolvedAt={item.resolved_at}
+              <AppCard
+                key={slug}
+                appSlug={slug}
+                appName={appNameBySlug.get(slug) ?? slug}
+                score={v.score}
+                max={v.max}
+                actions={appActionsForSlug}
                 readOnly={viewingAs}
-                xpReward={xpReward}
               />
             );
           })}
-          {(!actions || actions.length === 0) && (
-            <li className="text-glass-text-secondary">Clean board. Keep stacking.</li>
-          )}
-        </ul>
+        </div>
       </section>
     </main>
   );
