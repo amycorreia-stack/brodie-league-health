@@ -6,15 +6,15 @@ export function LiveCountersStrip({ counters }: { counters: Counters }) {
   return (
     <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
       <CounterCard
-        label="Registered athletes"
-        sublabel="From Player One via CRM sync · your locations"
-        value={counters.registered_athletes}
-        accent
-      />
-      <CounterCard
         label="Registered teams"
         sublabel="Distinct teams with at least one registered player"
         value={counters.registered_teams}
+        accent
+      />
+      <CounterCard
+        label="Registered athletes"
+        sublabel="From Player One via CRM sync · your locations"
+        value={counters.registered_athletes}
       />
       {/* Slot reserved for an upcoming counter (e.g. captain conversions
           this week). Keeps the grid balanced and signals more is coming. */}
