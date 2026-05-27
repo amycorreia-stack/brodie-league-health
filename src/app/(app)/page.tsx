@@ -239,7 +239,7 @@ export default async function MyDay({
         {Object.keys(breakdown).length === 0 && (
           <p className="text-glass-text-secondary">No data yet. Admin needs to run a sync.</p>
         )}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {Object.entries(breakdown).map(([slug, v]) => {
             const appActionsForSlug = (actions ?? [])
               .filter((a) => {

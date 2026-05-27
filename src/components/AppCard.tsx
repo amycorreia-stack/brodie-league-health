@@ -14,11 +14,9 @@ export type ActionItem = {
 };
 
 /**
- * Per-app card on My Day. Shows the LM's score for that app + their open
- * action items inline + a deep-link to the source app to "Lock in".
- *
- * Replaces the old "By app" tile grid + standalone "Today's focus" list —
- * actions now live on the card they relate to.
+ * Dense per-app tile. Built for scannable "what's my number / what's
+ * blocking me / where do I go" reads. Top 2 action items visible inline,
+ * the rest tucked behind a "+N more" expander.
  */
 export function AppCard({
   appSlug,
@@ -26,51 +24,43 @@ export function AppCard({
   score,
   max,
   actions,
-  readOnly = false,
 }: {
   appSlug: string;
   appName: string;
   score: number;
   max: number;
   actions: ActionItem[];
-  readOnly?: boolean;
+  readOnly?: boolean; // accepted for API compat; ignored now (no read-only badge)
 }) {
+  const [expanded, setExpanded] = useState(false);
   const pct = max > 0 ? Math.round((score / max) * 100) : 0;
   const deepLink = APP_DEEP_LINKS[appSlug];
   const openActions = actions.filter((a) => !a.resolved_at);
+  const visibleActions = expanded ? openActions : openActions.slice(0, 2);
+  const hiddenCount = openActions.length - visibleActions.length;
 
   return (
     <section
-      className="rounded-2xl border p-5 space-y-4 brodie-card"
+      className="rounded-2xl border p-4 brodie-card"
       style={{
         background: "var(--bg-raised)",
         borderColor: "var(--border)",
       }}
     >
-      {/* Header: app name + score + pct */}
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-glass-text-tertiary text-[10px] uppercase tracking-[0.08em] font-semibold">
-            {appName}
-          </p>
-          <div className="flex items-baseline gap-2 mt-1">
-            <span className={`text-3xl font-semibold tracking-tight ${scoreColor(pct)}`}>
-              {Math.round(score)}
-            </span>
-            <span className="text-glass-text-tertiary text-sm">
-              / {Math.round(max)} pts
-            </span>
-            <span className={`text-xs font-semibold ${scoreColor(pct)}`}>
-              · {pct}%
-            </span>
-          </div>
-        </div>
+      {/* Top row: app name + Lock in */}
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <p
+          className="uppercase text-[10px] tracking-[0.08em] font-semibold leading-tight"
+          style={{ color: "var(--text-mute)" }}
+        >
+          {appName}
+        </p>
         {deepLink && (
           <a
             href={deepLink.url}
             target="_blank"
             rel="noreferrer"
-            className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full transition"
+            className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full transition"
             style={{
               background: "var(--accent-soft)",
               color: "var(--accent)",
@@ -80,30 +70,50 @@ export function AppCard({
               textTransform: "uppercase",
             }}
           >
-            <span>Lock in</span>
-            <span aria-hidden>→</span>
+            Lock in →
           </a>
         )}
       </div>
 
-      {/* Action items inline */}
+      {/* Score block: big number, small max */}
+      <div className="flex items-baseline gap-2">
+        <span className={`text-2xl font-semibold tracking-tight ${scoreColor(pct)}`}>
+          {Math.round(score)}
+        </span>
+        <span className="text-xs" style={{ color: "var(--text-mute)" }}>
+          / {Math.round(max)} pts · {pct}%
+        </span>
+      </div>
+
+      {/* Action items — tight, max 2 visible, expander for the rest */}
       {openActions.length > 0 && (
-        <ul className="space-y-2 pt-1">
-          {openActions.map((a) => (
-            <ActionItemInline key={a.id} item={a} readOnly={readOnly} />
+        <ul className="mt-3 space-y-1.5">
+          {visibleActions.map((a) => (
+            <ActionItemInline key={a.id} item={a} />
           ))}
+          {!expanded && hiddenCount > 0 && (
+            <li>
+              <button
+                onClick={() => setExpanded(true)}
+                className="text-[11px] font-semibold uppercase tracking-wider hover:underline"
+                style={{ color: "var(--text-mute)" }}
+              >
+                +{hiddenCount} more
+              </button>
+            </li>
+          )}
         </ul>
       )}
       {openActions.length === 0 && actions.length > 0 && (
-        <p className="text-xs text-glass-text-tertiary italic">
-          All actions resolved for today. 💪
+        <p className="text-[11px] mt-2 italic" style={{ color: "var(--text-mute)" }}>
+          All actions resolved today.
         </p>
       )}
     </section>
   );
 }
 
-function ActionItemInline({ item, readOnly }: { item: ActionItem; readOnly: boolean }) {
+function ActionItemInline({ item }: { item: ActionItem }) {
   const [done, setDone] = useState(!!item.resolved_at);
   const [busy, setBusy] = useState(false);
 
@@ -123,49 +133,46 @@ function ActionItemInline({ item, readOnly }: { item: ActionItem; readOnly: bool
 
   return (
     <li
-      className={`flex items-start gap-3 rounded-xl p-3 ${done ? "opacity-50" : ""}`}
+      className={`flex items-start gap-2 rounded-lg p-2 ${done ? "opacity-50" : ""}`}
       style={{
         background: "var(--bg-sunken)",
         border: "1px solid var(--border)",
       }}
     >
-      <span className={`mt-1.5 inline-block w-2 h-2 rounded-full ${severityDot(item.severity)}`} />
-      <div className="flex-1 min-w-0">
-        <p className={`text-sm ${done ? "line-through text-glass-text-secondary" : ""}`}>
-          {item.title}
-        </p>
-        {item.detail && (
-          <p className="text-xs text-glass-text-secondary mt-1">{item.detail}</p>
-        )}
-      </div>
+      <span className={`mt-1 inline-block w-1.5 h-1.5 rounded-full flex-shrink-0 ${severityDot(item.severity)}`} />
+      <p
+        className={`flex-1 text-[12px] leading-tight ${done ? "line-through" : ""}`}
+        style={{ color: done ? "var(--text-mute)" : "var(--text)" }}
+      >
+        {item.title}
+      </p>
 
       {item.xpReward > 0 && !done && (
         <span
-          className="self-center text-[11px] font-semibold px-2 py-1 rounded-md"
+          className="self-center text-[10px] font-semibold px-1.5 py-0.5 rounded-md whitespace-nowrap"
           style={{
             background: "var(--accent-soft)",
             color: "var(--accent)",
             border: "1px solid rgba(242, 169, 0, 0.45)",
           }}
         >
-          +{item.xpReward} XP
+          +{item.xpReward}
         </span>
       )}
 
-      {!done && !readOnly && (
+      {!done && (
         <button
           onClick={markDone}
           disabled={busy}
-          className="text-xs px-2.5 py-1 rounded-md border border-glass-border hover:bg-glass-surface-hover disabled:opacity-50 transition"
-          style={{ background: "var(--input-bg)" }}
+          className="text-[10px] px-2 py-0.5 rounded-md border hover:bg-glass-surface-hover disabled:opacity-50 transition whitespace-nowrap"
+          style={{
+            background: "var(--input-bg)",
+            color: "var(--text)",
+            borderColor: "var(--border)",
+          }}
         >
           {busy ? "..." : "Done"}
         </button>
-      )}
-      {readOnly && !done && (
-        <span className="text-[10px] uppercase tracking-wider text-glass-text-tertiary px-2 py-1 font-semibold">
-          read-only
-        </span>
       )}
     </li>
   );
