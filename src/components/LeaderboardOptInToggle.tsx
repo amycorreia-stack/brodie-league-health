@@ -22,10 +22,13 @@ export function LeaderboardOptInToggle({ initial }: { initial: boolean }) {
     <button
       onClick={flip}
       disabled={busy}
-      className="text-xs px-3 py-1.5 rounded-full border border-brodie-line hover:bg-brodie-line"
+      className="text-xs px-3 py-1.5 rounded-full border border-glass-border bg-glass-surface hover:bg-glass-surface-hover transition"
       title="Toggle whether you appear on the global leaderboard"
     >
-      Leaderboard: <span className={on ? "text-brodie-good font-semibold" : "text-brodie-dim"}>{on ? "on" : "off"}</span>
+      Leaderboard:{" "}
+      <span className={on ? "text-glass-gold font-semibold" : "text-glass-text-tertiary"}>
+        {on ? "on" : "off"}
+      </span>
     </button>
   );
 }

@@ -31,11 +31,11 @@ export function RefreshButton() {
       <button
         onClick={refresh}
         disabled={busy}
-        className="text-sm px-3 py-2 rounded bg-brodie-accent text-black font-semibold disabled:opacity-50"
+        className="text-sm px-3.5 py-2 rounded-lg bg-glass-gold text-black font-semibold disabled:opacity-50 hover:brightness-110 transition"
       >
         {busy ? "Refreshing..." : "Refresh now"}
       </button>
-      {msg && <span className="text-xs text-brodie-dim">{msg}</span>}
+      {msg && <span className="text-xs text-glass-text-tertiary">{msg}</span>}
     </div>
   );
 }

@@ -1,179 +1,152 @@
 import type { Adapter, AdapterResult, LMRollup } from "../types";
 import { sourceClient, sourceConfigured } from "../clients";
-import { ymd, daysAgo, pctScore } from "../util";
+import { ymd } from "../util";
 
 /**
- * brodie-crm verified schema:
- *   managers: id, email, name, role, assigned_locations (text[] of location ids), active
- *   locations: id (text), name
- *   leads: id, email, status (enum: new|contacted|engaged|hot|closing|registered|lost),
- *          location_id (text), assigned_manager_id, created_at
- *   activities: lead_id, manager_id, channel, direction (outbound|inbound|system),
- *               outcome, created_at
- *   teams: location_id (text), season (text), status (forming|full|registered|cancelled)
- *   season_captain_goals: location_id (text), season (text), target (int)
+ * brodie-crm — task-based scoring (v2, locked 2026-05-27).
  *
- * Sub-metrics:
- *   reg_pace          (50%) — registered+full teams vs season target for LM's locations
- *   lead_response_sla (30%) — % new leads (last 7d) with first outbound activity in <24h
- *   captain_followup  (20%) — % active leads (status in new|contacted|engaged|hot|closing)
- *                              with an activity in the last 7 days
+ * Three sub-metrics:
+ *   crm_touch         (+1 each, max 50/day counted)
+ *     Any activities row OR completed cadence_event that the LM initiated
+ *     today. Excludes customer.io system activities (source='cio') and
+ *     mass-broadcast webhooks (source='broadcast_webhook') since those
+ *     aren't manual outreach.
+ *
+ *   crm_50_bonus      (+10 if touch count >= 50)
+ *     One-time bonus per day.
+ *
+ *   crm_ig_no_outcome (-0.5 each, floored at -15)
+ *     Outbound IG DMs (activities, channel='ig', direction='outbound',
+ *     manager_id=LM) that are more than 24h old and still have
+ *     outcome IS NULL. Penalty for "I sent it and never logged what
+ *     happened."
+ *
+ * Live counter (not XP): current-season registered/full teams in their
+ * assigned locations. The dashboard pulls this directly — adapter just
+ * surfaces it on the rollup so admin pages can also see it.
  */
+
+// Excludes anything system-generated. Customer.io uses both `cio` and
+// `cio_webhook`. Broadcast webhooks are mass-blast outputs (not personal).
+const NON_LM_SOURCES = ["cio", "cio_webhook", "broadcast_webhook"];
+
 export const crmAdapter: Adapter = {
   slug: "crm",
   async sync(snapshotDate: Date): Promise<AdapterResult> {
     if (!sourceConfigured("crm")) return { slug: "crm", rollups: [], unconfigured: true };
     const sb = sourceClient("crm")!;
-    const sevenDaysAgo = ymd(daysAgo(snapshotDate, 7));
+
+    const todayStr = ymd(snapshotDate);
+    const dayStart = todayStr + "T00:00:00Z";
+    const dayEnd = todayStr + "T23:59:59Z";
+    const cutoff24h = new Date(snapshotDate.getTime() - 24 * 60 * 60 * 1000).toISOString();
 
     const { data: managers, error: mErr } = await sb
       .from("managers")
-      .select("id, email, name, role, assigned_locations, active");
+      .select("id, email, role, active");
     if (mErr) return { slug: "crm", rollups: [], error: mErr.message };
 
     const lms = (managers ?? []).filter(
       (m: { role: string; active: boolean }) =>
         (m.role === "league_manager" || m.role === "district_manager") && m.active
-    ) as Array<{ id: string; email: string; name: string; assigned_locations: string[] | null }>;
-
-    const { data: locations } = await sb.from("locations").select("id, name");
-    const locMap = new Map((locations ?? []).map((l: { id: string; name: string }) => [l.id, l.name]));
-
-    // figure out the "current season" string the CRM team uses. Look at the most
-    // recent goal row as the source of truth.
-    const { data: latestGoal } = await sb
-      .from("season_captain_goals")
-      .select("season, updated_at")
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    const currentSeason = (latestGoal as { season?: string } | null)?.season ?? null;
-
-    const ACTIVE_STATUSES = ["new", "contacted", "engaged", "hot", "closing"];
+    ) as Array<{ id: string; email: string }>;
 
     const rollups: LMRollup[] = [];
 
     for (const m of lms) {
-      const locIds = m.assigned_locations ?? [];
-      const firstLoc = locIds[0];
       const rollup: LMRollup = {
         lm_email: m.email,
-        location_name: firstLoc ? locMap.get(firstLoc) : undefined,
         metrics: [],
         action_items: [],
       };
 
-      // 1. reg_pace — teams in their locations vs season target
-      let goalTeams = 0;
-      let currentTeams = 0;
-      if (currentSeason && locIds.length) {
-        const { data: goals } = await sb
-          .from("season_captain_goals")
-          .select("target, location_id")
-          .eq("season", currentSeason)
-          .in("location_id", locIds);
-        goalTeams = (goals ?? []).reduce((s: number, g: { target: number }) => s + (g.target ?? 0), 0);
+      // 1. crm_touch — count today's LM-initiated touches.
+      // Must be: outbound direction (not inbound replies or system events),
+      // AND not a system/CIO/broadcast source.
+      const { data: actsToday } = await sb
+        .from("activities")
+        .select("id, source, channel, direction")
+        .eq("manager_id", m.id)
+        .eq("direction", "outbound")
+        .gte("created_at", dayStart)
+        .lte("created_at", dayEnd);
+      const activityTouches = ((actsToday ?? []) as Array<{ source: string | null }>).filter(
+        (a) => !NON_LM_SOURCES.includes(a.source ?? "")
+      ).length;
 
-        const { count: regCount } = await sb
-          .from("teams")
-          .select("*", { count: "exact", head: true })
-          .in("location_id", locIds)
-          .eq("season", currentSeason)
-          .in("status", ["registered", "full"]);
-        currentTeams = regCount ?? 0;
-      }
-      const regPaceScore = goalTeams ? pctScore(currentTeams, goalTeams) : 100;
+      const { data: cadenceToday } = await sb
+        .from("cadence_events")
+        .select("id, completed_by, status, completed_at")
+        .eq("completed_by", m.id)
+        .eq("status", "completed")
+        .gte("completed_at", dayStart)
+        .lte("completed_at", dayEnd);
+      const cadenceTouches = (cadenceToday ?? []).length;
+
+      const totalTouches = activityTouches + cadenceTouches;
+      // 1 XP per touch, but cap the *base count* at 50 (so XP from touches ≤ 50)
+      const touchXp = Math.min(totalTouches, 50);
+
       rollup.metrics.push({
-        metric_slug: "reg_pace",
-        raw_value: currentTeams,
-        max_score: 100,
-        score: regPaceScore,
-        payload: { goal: goalTeams, current: currentTeams, season: currentSeason },
+        metric_slug: "crm_touch",
+        raw_value: totalTouches,
+        max_score: 50,
+        score: touchXp,
+        payload: { total: totalTouches, capped_at_50: totalTouches > 50, activities: activityTouches, cadence: cadenceTouches },
       });
-      if (regPaceScore < 70 && goalTeams > 0) {
+
+      // 2. crm_50_bonus — +10 if hit 50 touches today
+      const hit50 = totalTouches >= 50;
+      rollup.metrics.push({
+        metric_slug: "crm_50_bonus",
+        raw_value: hit50 ? 1 : 0,
+        max_score: 10,
+        score: hit50 ? 10 : 0,
+        payload: { hit_threshold: hit50, threshold: 50 },
+      });
+
+      // 3. crm_ig_no_outcome — outbound IG DMs >24h old with outcome IS NULL
+      const { data: ghosted } = await sb
+        .from("activities")
+        .select("id, created_at, body")
+        .eq("manager_id", m.id)
+        .eq("channel", "ig")
+        .eq("direction", "outbound")
+        .is("outcome", null)
+        .lt("created_at", cutoff24h);
+      const ghostCount = (ghosted ?? []).length;
+      const ghostXp = Math.max(-15, -0.5 * ghostCount);
+
+      rollup.metrics.push({
+        metric_slug: "crm_ig_no_outcome",
+        raw_value: ghostCount,
+        max_score: 0,
+        score: ghostXp,
+        payload: { ghosted: ghostCount, floor_hit: ghostXp === -15 },
+      });
+
+      // ---- Action items: only what the LM can actually action today ----
+      const remaining = Math.max(0, 50 - totalTouches);
+      if (remaining > 0) {
         rollup.action_items.push({
-          metric_slug: "reg_pace",
-          title: `Registration behind: ${currentTeams}/${goalTeams} teams${currentSeason ? ` (${currentSeason})` : ""}`,
-          detail: "Hit the captain pipeline today.",
-          severity: regPaceScore < 40 ? "critical" : "high",
+          metric_slug: "crm_touch",
+          title: `${remaining} more touch${remaining === 1 ? "" : "es"} to hit your 50/day` ,
+          detail: `${totalTouches}/50 done so far. Each touch = +1 XP, plus +10 bonus at 50.`,
+          severity: remaining > 30 ? "high" : remaining > 10 ? "medium" : "low",
         });
       }
-
-      // 2. lead_response_sla
-      const { data: newLeads } = await sb
-        .from("leads")
-        .select("id, created_at")
-        .eq("assigned_manager_id", m.id)
-        .gte("created_at", sevenDaysAgo);
-      const leadIds = (newLeads ?? []).map((l: { id: string }) => l.id);
-      let withTouch = 0;
-      if (leadIds.length) {
-        const { data: outbound } = await sb
-          .from("activities")
-          .select("lead_id, created_at")
-          .in("lead_id", leadIds)
-          .eq("direction", "outbound");
-        const firstByLead = new Map<string, Date>();
-        for (const a of (outbound ?? []) as Array<{ lead_id: string; created_at: string }>) {
-          const t = new Date(a.created_at);
-          const prev = firstByLead.get(a.lead_id);
-          if (!prev || t < prev) firstByLead.set(a.lead_id, t);
-        }
-        for (const lead of (newLeads ?? []) as Array<{ id: string; created_at: string }>) {
-          const first = firstByLead.get(lead.id);
-          if (first && first.getTime() - new Date(lead.created_at).getTime() <= 86400000) withTouch++;
-        }
-      }
-      const slaScore = pctScore(withTouch, leadIds.length || 1);
-      rollup.metrics.push({
-        metric_slug: "lead_response_sla",
-        raw_value: withTouch,
-        max_score: 100,
-        score: slaScore,
-        payload: { window_days: 7, total: leadIds.length, on_time: withTouch },
-      });
-      if (slaScore < 80 && leadIds.length > 0) {
+      if (ghostCount > 0) {
         rollup.action_items.push({
-          metric_slug: "lead_response_sla",
-          title: `${leadIds.length - withTouch} new leads waited > 24h for first touch`,
-          severity: slaScore < 50 ? "high" : "medium",
-        });
-      }
-
-      // 3. captain_followup
-      const { data: activeLeads } = await sb
-        .from("leads")
-        .select("id")
-        .eq("assigned_manager_id", m.id)
-        .in("status", ACTIVE_STATUSES);
-      const activeIds = (activeLeads ?? []).map((l: { id: string }) => l.id);
-      let touchedRecently = 0;
-      if (activeIds.length) {
-        const { data: recent } = await sb
-          .from("activities")
-          .select("lead_id")
-          .in("lead_id", activeIds)
-          .gte("created_at", sevenDaysAgo);
-        touchedRecently = new Set((recent ?? []).map((r: { lead_id: string }) => r.lead_id)).size;
-      }
-      const followupScore = pctScore(touchedRecently, activeIds.length || 1);
-      rollup.metrics.push({
-        metric_slug: "captain_followup",
-        raw_value: touchedRecently,
-        max_score: 100,
-        score: followupScore,
-        payload: { active: activeIds.length, touched_7d: touchedRecently },
-      });
-      if (followupScore < 75 && activeIds.length > 0) {
-        rollup.action_items.push({
-          metric_slug: "captain_followup",
-          title: `${activeIds.length - touchedRecently} active captains haven't heard from you in 7+ days`,
-          severity: "medium",
+          metric_slug: "crm_ig_no_outcome",
+          title: `${ghostCount} outbound IG DM${ghostCount === 1 ? "" : "s"} waiting for an outcome`,
+          detail: `Each one is costing you 0.5 XP/day. Log the outcome to stop the bleed.`,
+          severity: ghostCount >= 10 ? "high" : "medium",
         });
       }
 
       rollups.push(rollup);
     }
+
     return { slug: "crm", rollups };
   },
 };

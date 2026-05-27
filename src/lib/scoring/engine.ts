@@ -2,9 +2,10 @@ import { createAdminClient } from "@/lib/supabase/admin";
 import { ADAPTERS } from "@/lib/source-apps";
 import { ymd } from "@/lib/source-apps/util";
 import { syncRoster } from "@/lib/roster";
+import { clearLocationCache } from "@/lib/source-apps/cross-app-locations";
 
-type AppRow = { id: string; slug: string; weight: number; enabled: boolean };
-type MetricRow = { id: string; app_id: string; slug: string; weight_within_app: number };
+type AppRow = { id: string; slug: string; weight: number; enabled: boolean; xp_floor: number };
+type MetricRow = { id: string; app_id: string; slug: string };
 type LMRow = { id: string; email: string };
 
 export type SyncReport = {
@@ -24,9 +25,11 @@ export async function runDailySync(opts?: { triggeredBy?: "cron" | "manual"; dat
   const dateStr = ymd(snapshotDate);
 
   await syncRoster();
+  clearLocationCache();
 
-  const { data: apps } = await sb.from("apps").select("id, slug, weight, enabled");
-  const { data: metrics } = await sb.from("metrics").select("id, app_id, slug, weight_within_app");
+  // Skip disabled apps (e.g. ops_schedule until that app is built out).
+  const { data: apps } = await sb.from("apps").select("id, slug, weight, enabled, xp_floor").eq("enabled", true);
+  const { data: metrics } = await sb.from("metrics").select("id, app_id, slug");
   const { data: lms } = await sb.from("league_managers").select("id, email").eq("active", true);
 
   const appBySlug = new Map((apps as AppRow[] ?? []).map((a) => [a.slug, a]));
@@ -41,7 +44,10 @@ export async function runDailySync(opts?: { triggeredBy?: "cron" | "manual"; dat
 
   for (const adapter of ADAPTERS) {
     const app = appBySlug.get(adapter.slug);
-    if (!app) continue;
+    if (!app) {
+      // adapter exists but app disabled — skip silently
+      continue;
+    }
 
     const { data: runRow } = await sb
       .from("sync_runs")
@@ -93,8 +99,8 @@ export async function runDailySync(opts?: { triggeredBy?: "cron" | "manual"; dat
           snapshot_date: dateStr,
           raw_value: mr.raw_value,
           raw_payload: mr.payload ?? {},
-          score: mr.score,
-          max_score: mr.max_score,
+          score: mr.score,           // task-based XP value (can be negative)
+          max_score: mr.max_score,   // potential XP if perfect (display only)
         });
         totalSnapshotRows++;
       }
@@ -117,8 +123,11 @@ export async function runDailySync(opts?: { triggeredBy?: "cron" | "manual"; dat
     if (snapshotRows.length) {
       await sb.from("daily_snapshots").upsert(snapshotRows, { onConflict: "lm_id,metric_id,snapshot_date" });
     }
+    // Always wipe stale action items for this app+date first — otherwise rows
+    // from earlier sync runs (or from old adapter logic) leak through when
+    // the new adapter emits zero items.
+    await sb.from("daily_action_items").delete().eq("snapshot_date", dateStr).eq("app_id", app.id);
     if (actionRows.length) {
-      await sb.from("daily_action_items").delete().eq("snapshot_date", dateStr).eq("app_id", app.id);
       await sb.from("daily_action_items").insert(actionRows);
     }
 
@@ -130,17 +139,17 @@ export async function runDailySync(opts?: { triggeredBy?: "cron" | "manual"; dat
 }
 
 /**
- * After daily_snapshots are written, compute XP per LM and write
- * lm_xp_totals. Done as a separate pass so weight tweaks can be re-applied
- * without re-syncing the source apps.
+ * Task-based scoring (v2): sum raw XP per LM per app, then multiply by
+ * app.weight (a 0–2 multiplier). Apply per-app xp_floor so a single bad
+ * domain can't tank the total beyond a floor. No share-normalization.
  */
 export async function recomputeScores(date?: Date) {
   const sb = createAdminClient();
   const snapshotDate = date ?? new Date();
   const dateStr = ymd(snapshotDate);
 
-  const { data: apps } = await sb.from("apps").select("id, slug, weight, enabled");
-  const { data: metrics } = await sb.from("metrics").select("id, app_id, slug, weight_within_app, enabled");
+  const { data: apps } = await sb.from("apps").select("id, slug, weight, enabled, xp_floor").eq("enabled", true);
+  const { data: metrics } = await sb.from("metrics").select("id, app_id, slug");
   const { data: snapshots } = await sb
     .from("daily_snapshots")
     .select("lm_id, app_id, metric_id, score, max_score")
@@ -148,52 +157,64 @@ export async function recomputeScores(date?: Date) {
 
   const appById = new Map((apps as AppRow[] ?? []).map((a) => [a.id, a]));
   const metricById = new Map((metrics as MetricRow[] ?? []).map((m) => [m.id, m]));
-  const totalAppWeight = (apps as AppRow[] ?? [])
-    .filter((a) => a.enabled)
-    .reduce((s, a) => s + Number(a.weight), 0) || 1;
 
-  // metric weight totals within each app (for normalization)
-  const appMetricTotal = new Map<string, number>();
-  for (const m of (metrics as MetricRow[] ?? [])) {
-    appMetricTotal.set(m.app_id, (appMetricTotal.get(m.app_id) ?? 0) + Number(m.weight_within_app));
-  }
-
-  type LMAgg = { xp: number; max: number; breakdown: Record<string, { score: number; max: number; metrics: Record<string, { score: number; max: number }> }> };
+  type AppAgg = { rawXp: number; rawMax: number; metrics: Record<string, { score: number; max: number }> };
+  type LMAgg = { totalXp: number; maxXp: number; perApp: Record<string, AppAgg> };
   const byLM = new Map<string, LMAgg>();
 
   for (const s of (snapshots ?? []) as Array<{ lm_id: string; app_id: string; metric_id: string; score: number; max_score: number }>) {
     const app = appById.get(s.app_id);
     const metric = metricById.get(s.metric_id);
     if (!app || !metric) continue;
-    const appWeightShare = Number(app.weight) / totalAppWeight; // 0..1
-    const metricTotal = appMetricTotal.get(app.id) || 1;
-    const metricWeightShare = Number(metric.weight_within_app) / metricTotal;
-    const contribution = s.score * appWeightShare * metricWeightShare;
-    const maxContribution = s.max_score * appWeightShare * metricWeightShare;
 
-    if (!byLM.has(s.lm_id)) byLM.set(s.lm_id, { xp: 0, max: 0, breakdown: {} });
+    if (!byLM.has(s.lm_id)) byLM.set(s.lm_id, { totalXp: 0, maxXp: 0, perApp: {} });
     const agg = byLM.get(s.lm_id)!;
-    agg.xp += contribution;
-    agg.max += maxContribution;
-    if (!agg.breakdown[app.slug]) agg.breakdown[app.slug] = { score: 0, max: 0, metrics: {} };
-    agg.breakdown[app.slug].score += contribution;
-    agg.breakdown[app.slug].max += maxContribution;
-    agg.breakdown[app.slug].metrics[metric.slug] = { score: s.score, max: s.max_score };
+    const appBucket = (agg.perApp[app.slug] ??= { rawXp: 0, rawMax: 0, metrics: {} });
+    appBucket.rawXp += Number(s.score);
+    appBucket.rawMax += Number(s.max_score);
+    appBucket.metrics[metric.slug] = { score: Number(s.score), max: Number(s.max_score) };
   }
 
-  const rows = [...byLM.entries()].map(([lm_id, agg]) => ({
-    lm_id,
-    snapshot_date: dateStr,
-    total_xp: Math.round(agg.xp * 10) / 10,
-    max_xp: Math.round(agg.max * 10) / 10,
-    breakdown: agg.breakdown,
-  }));
+  // apply per-app multiplier + floor
+  for (const [, agg] of byLM) {
+    for (const [slug, bucket] of Object.entries(agg.perApp)) {
+      const app = [...appById.values()].find((a) => a.slug === slug);
+      if (!app) continue;
+      const mult = Number(app.weight);
+      const floor = Number(app.xp_floor);
+      // multiplier scales both contribution and max; floor only caps below
+      const scaled = bucket.rawXp * mult;
+      const flooredScaled = Math.max(scaled, floor);
+      const scaledMax = bucket.rawMax * mult;
+      agg.totalXp += flooredScaled;
+      agg.maxXp += scaledMax;
+      // overwrite bucket values to the scaled+floored numbers for the breakdown
+      bucket.rawXp = flooredScaled;
+      bucket.rawMax = scaledMax;
+    }
+  }
+
+  // shape breakdown for storage (same shape MyDay reads today)
+  type Breakdown = Record<string, { score: number; max: number; metrics: Record<string, { score: number; max: number }> }>;
+  const rows = [...byLM.entries()].map(([lm_id, agg]) => {
+    const breakdown: Breakdown = {};
+    for (const [slug, bucket] of Object.entries(agg.perApp)) {
+      breakdown[slug] = { score: bucket.rawXp, max: bucket.rawMax, metrics: bucket.metrics };
+    }
+    return {
+      lm_id,
+      snapshot_date: dateStr,
+      total_xp: Math.round(agg.totalXp * 10) / 10,
+      max_xp: Math.round(agg.maxXp * 10) / 10,
+      breakdown,
+    };
+  });
 
   if (rows.length) {
     await sb.from("lm_xp_totals").upsert(rows, { onConflict: "lm_id,snapshot_date" });
   }
 
-  // assign rank_overall
+  // ranks
   const sorted = [...rows].sort((a, b) => b.total_xp - a.total_xp);
   for (let i = 0; i < sorted.length; i++) {
     await sb
@@ -201,6 +222,14 @@ export async function recomputeScores(date?: Date) {
       .update({ rank_overall: i + 1 })
       .eq("lm_id", sorted[i].lm_id)
       .eq("snapshot_date", dateStr);
+  }
+
+  // gamification pass (streaks, tiers, achievements)
+  try {
+    const { recomputeGamification } = await import("./gamification");
+    await recomputeGamification(snapshotDate);
+  } catch (e) {
+    console.error("gamification pass failed:", e);
   }
 
   return { computed: rows.length, date: dateStr };

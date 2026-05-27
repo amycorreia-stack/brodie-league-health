@@ -5,20 +5,89 @@ import { useMemo, useState } from "react";
 type App = { id: string; slug: string; name: string; weight: number };
 type Metric = { id: string; app_id: string; slug: string; name: string; weight_within_app: number; direction: string };
 
-export function WeightEditor({ apps, metrics }: { apps: App[]; metrics: Metric[] }) {
-  const [appWeights, setAppWeights] = useState<Record<string, number>>(
-    Object.fromEntries(apps.map((a) => [a.id, Number(a.weight)]))
-  );
-  const [metricWeights, setMetricWeights] = useState<Record<string, number>>(
-    Object.fromEntries(metrics.map((m) => [m.id, Number(m.weight_within_app)]))
-  );
-  const [note, setNote] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+/**
+ * Smart weights:
+ *   - App weights always sum to 100. When you move one slider up by N, the
+ *     others lose N proportionally to their current share. Symmetric for down.
+ *   - Sub-metric weights inside each app always sum to 100, same logic.
+ *   - If a "sibling group" is fully zeroed, the redistribution falls back to
+ *     equal split so we never get stuck.
+ */
+function rebalance(prev: Record<string, number>, changedId: string, nextValue: number): Record<string, number> {
+  const TOTAL = 100;
+  const ids = Object.keys(prev);
+  const others = ids.filter((id) => id !== changedId);
+  if (!others.length) return { [changedId]: TOTAL };
 
-  const totalAppWeight = useMemo(
-    () => Object.values(appWeights).reduce((s, n) => s + Number(n), 0),
-    [appWeights]
+  const clampedNext = Math.max(0, Math.min(TOTAL, Math.round(nextValue)));
+  const remaining = TOTAL - clampedNext;
+  const prevOtherTotal = others.reduce((s, id) => s + (prev[id] ?? 0), 0);
+
+  const out: Record<string, number> = { ...prev, [changedId]: clampedNext };
+
+  if (remaining <= 0) {
+    // moved slider all the way up → siblings go to zero
+    for (const id of others) out[id] = 0;
+    out[changedId] = TOTAL;
+    return out;
+  }
+
+  if (prevOtherTotal <= 0) {
+    // equal split among siblings
+    const each = Math.floor(remaining / others.length);
+    let leftover = remaining - each * others.length;
+    for (const id of others) {
+      out[id] = each + (leftover > 0 ? 1 : 0);
+      if (leftover > 0) leftover--;
+    }
+    return out;
+  }
+
+  // proportional redistribution
+  let assigned = 0;
+  const drafts = new Map<string, number>();
+  for (const id of others) {
+    const share = (prev[id] ?? 0) / prevOtherTotal;
+    const raw = remaining * share;
+    const floored = Math.floor(raw);
+    drafts.set(id, floored);
+    assigned += floored;
+  }
+  // distribute the rounding leftover to siblings with the largest fractional remainders
+  const leftover = remaining - assigned;
+  const sortedByFrac = others
+    .map((id) => ({ id, frac: remaining * ((prev[id] ?? 0) / prevOtherTotal) - (drafts.get(id) ?? 0) }))
+    .sort((a, b) => b.frac - a.frac);
+  for (let i = 0; i < leftover; i++) {
+    const id = sortedByFrac[i % sortedByFrac.length].id;
+    drafts.set(id, (drafts.get(id) ?? 0) + 1);
+  }
+  for (const id of others) out[id] = drafts.get(id) ?? 0;
+  out[changedId] = clampedNext;
+  return out;
+}
+
+export function WeightEditor({ apps, metrics }: { apps: App[]; metrics: Metric[] }) {
+  // Normalize starting values to sum-to-100 so the UI is always in valid state.
+  const normalizeToHundred = (entries: Array<{ id: string; w: number }>): Record<string, number> => {
+    const total = entries.reduce((s, e) => s + e.w, 0);
+    if (total <= 0) {
+      const each = Math.floor(100 / Math.max(entries.length, 1));
+      let leftover = 100 - each * entries.length;
+      return Object.fromEntries(entries.map((e) => [e.id, each + (leftover-- > 0 ? 1 : 0)]));
+    }
+    // Scale + round, then patch the largest one with the remainder.
+    const scaled = entries.map((e) => ({ id: e.id, raw: (e.w / total) * 100 }));
+    const floored = scaled.map((s) => ({ id: s.id, v: Math.floor(s.raw), frac: s.raw - Math.floor(s.raw) }));
+    const sum = floored.reduce((s, f) => s + f.v, 0);
+    let leftover = 100 - sum;
+    const sortedByFrac = [...floored].sort((a, b) => b.frac - a.frac);
+    for (let i = 0; i < leftover; i++) sortedByFrac[i % sortedByFrac.length].v++;
+    return Object.fromEntries(floored.map((f) => [f.id, f.v]));
+  };
+
+  const [appWeights, setAppWeights] = useState<Record<string, number>>(() =>
+    normalizeToHundred(apps.map((a) => ({ id: a.id, w: Number(a.weight) })))
   );
 
   const metricsByApp = useMemo(() => {
@@ -29,6 +98,34 @@ export function WeightEditor({ apps, metrics }: { apps: App[]; metrics: Metric[]
     }
     return m;
   }, [metrics]);
+
+  const [metricWeights, setMetricWeights] = useState<Record<string, number>>(() => {
+    const out: Record<string, number> = {};
+    for (const a of apps) {
+      const list = metricsByApp.get(a.id) ?? [];
+      Object.assign(
+        out,
+        normalizeToHundred(list.map((m) => ({ id: m.id, w: Number(m.weight_within_app) })))
+      );
+    }
+    return out;
+  });
+
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  function updateApp(id: string, next: number) {
+    setAppWeights((prev) => rebalance(prev, id, next));
+  }
+  function updateMetric(appId: string, metricId: string, next: number) {
+    const list = metricsByApp.get(appId) ?? [];
+    const ids = list.map((m) => m.id);
+    const slice: Record<string, number> = {};
+    for (const id of ids) slice[id] = metricWeights[id] ?? 0;
+    const rebalanced = rebalance(slice, metricId, next);
+    setMetricWeights((prev) => ({ ...prev, ...rebalanced }));
+  }
 
   async function save() {
     setBusy(true);
@@ -54,35 +151,23 @@ export function WeightEditor({ apps, metrics }: { apps: App[]; metrics: Metric[]
 
   return (
     <div className="space-y-6">
-      <section className="rounded-xl border border-brodie-line p-5">
-        <div className="flex justify-between items-end mb-3">
-          <h2 className="text-lg font-display font-bold">App weights</h2>
-          <span className="text-xs text-brodie-dim">Total: {totalAppWeight.toFixed(0)} (normalized at scoring)</span>
+      <section className="rounded-2xl border border-glass-border bg-glass-surface p-5">
+        <div className="flex justify-between items-baseline mb-4">
+          <h2 className="text-base font-semibold">App weights</h2>
+          <span className="text-xs text-glass-text-tertiary">Total: 100 (auto-balanced)</span>
         </div>
         <div className="space-y-3">
           {apps.map((a) => {
-            const v = appWeights[a.id];
-            const share = totalAppWeight ? (v / totalAppWeight) * 100 : 0;
+            const v = appWeights[a.id] ?? 0;
             return (
-              <div key={a.id} className="grid grid-cols-12 gap-3 items-center">
-                <label className="col-span-3 text-sm">{a.name}</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={50}
-                  value={v}
-                  onChange={(e) => setAppWeights({ ...appWeights, [a.id]: Number(e.target.value) })}
-                  className="col-span-6 accent-brodie-accent"
-                />
-                <input
-                  type="number"
-                  value={v}
-                  min={0}
-                  onChange={(e) => setAppWeights({ ...appWeights, [a.id]: Number(e.target.value) })}
-                  className="col-span-1 bg-black border border-brodie-line rounded px-2 py-1 text-right text-sm"
-                />
-                <span className="col-span-2 text-right text-xs text-brodie-dim">{share.toFixed(1)}% of total</span>
-              </div>
+              <WeightRow
+                key={a.id}
+                label={a.name}
+                value={v}
+                share={v}
+                shareLabel="of total"
+                onChange={(n) => updateApp(a.id, n)}
+              />
             );
           })}
         </div>
@@ -90,37 +175,31 @@ export function WeightEditor({ apps, metrics }: { apps: App[]; metrics: Metric[]
 
       {apps.map((a) => {
         const list = metricsByApp.get(a.id) ?? [];
-        const subTotal = list.reduce((s, m) => s + Number(metricWeights[m.id] ?? 0), 0);
         return (
-          <section key={a.id} className="rounded-xl border border-brodie-line p-5">
-            <div className="flex justify-between items-end mb-3">
-              <h3 className="text-base font-display font-bold">{a.name} · sub-metrics</h3>
-              <span className="text-xs text-brodie-dim">Total: {subTotal.toFixed(0)}</span>
+          <section key={a.id} className="rounded-2xl border border-glass-border bg-glass-surface p-5">
+            <div className="flex justify-between items-baseline mb-4">
+              <h3 className="text-sm font-semibold">{a.name} <span className="text-glass-text-tertiary font-normal">· sub-metrics</span></h3>
+              <span className="text-xs text-glass-text-tertiary">Total: 100 (auto-balanced)</span>
             </div>
             <div className="space-y-3">
               {list.map((m) => {
-                const v = metricWeights[m.id];
-                const share = subTotal ? (v / subTotal) * 100 : 0;
+                const v = metricWeights[m.id] ?? 0;
                 return (
-                  <div key={m.id} className="grid grid-cols-12 gap-3 items-center">
-                    <label className="col-span-4 text-sm">{m.name} <span className="text-brodie-dim text-xs">({m.direction === "lower_better" ? "↓ better" : "↑ better"})</span></label>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={v}
-                      onChange={(e) => setMetricWeights({ ...metricWeights, [m.id]: Number(e.target.value) })}
-                      className="col-span-5 accent-brodie-accent"
-                    />
-                    <input
-                      type="number"
-                      value={v}
-                      min={0}
-                      onChange={(e) => setMetricWeights({ ...metricWeights, [m.id]: Number(e.target.value) })}
-                      className="col-span-1 bg-black border border-brodie-line rounded px-2 py-1 text-right text-sm"
-                    />
-                    <span className="col-span-2 text-right text-xs text-brodie-dim">{share.toFixed(0)}% of {a.name}</span>
-                  </div>
+                  <WeightRow
+                    key={m.id}
+                    label={
+                      <>
+                        {m.name}{" "}
+                        <span className="text-glass-text-tertiary text-xs">
+                          ({m.direction === "lower_better" ? "↓ better" : "↑ better"})
+                        </span>
+                      </>
+                    }
+                    value={v}
+                    share={v}
+                    shareLabel={`of ${a.name}`}
+                    onChange={(n) => updateMetric(a.id, m.id, n)}
+                  />
                 );
               })}
             </div>
@@ -128,25 +207,67 @@ export function WeightEditor({ apps, metrics }: { apps: App[]; metrics: Metric[]
         );
       })}
 
-      <section className="flex items-end gap-3">
-        <div className="flex-1">
-          <label className="block text-xs text-brodie-dim mb-1">Note (optional, written to audit log)</label>
+      <section className="rounded-2xl border border-glass-border bg-glass-surface p-5 flex items-end gap-3 flex-wrap">
+        <div className="flex-1 min-w-[260px]">
+          <label className="block text-xs text-glass-text-tertiary mb-1 uppercase tracking-wider font-semibold">
+            Note (optional, written to audit log)
+          </label>
           <input
             value={note}
             onChange={(e) => setNote(e.target.value)}
             placeholder="e.g., dialed up facilities after Q2 contract churn"
-            className="w-full bg-black border border-brodie-line rounded px-3 py-2 text-sm"
+            className="w-full bg-[var(--input-bg)] border border-glass-border rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-glass-gold"
           />
         </div>
         <button
           onClick={save}
           disabled={busy}
-          className="px-4 py-2 rounded bg-brodie-accent text-black font-semibold disabled:opacity-50"
+          className="px-5 py-2.5 rounded-lg bg-glass-gold text-black font-semibold text-sm disabled:opacity-50 hover:brightness-110 transition"
         >
           {busy ? "Saving..." : "Save weights"}
         </button>
       </section>
-      {msg && <p className="text-sm text-brodie-dim">{msg}</p>}
+      {msg && <p className="text-sm text-glass-text-secondary">{msg}</p>}
+    </div>
+  );
+}
+
+function WeightRow({
+  label,
+  value,
+  share,
+  shareLabel,
+  onChange,
+}: {
+  label: React.ReactNode;
+  value: number;
+  share: number;
+  shareLabel: string;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className="grid grid-cols-12 gap-3 items-center">
+      <label className="col-span-4 text-sm">{label}</label>
+      <input
+        type="range"
+        min={0}
+        max={100}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="col-span-5 accent-glass-gold"
+        style={{ accentColor: "var(--glass-gold)" }}
+      />
+      <input
+        type="number"
+        value={value}
+        min={0}
+        max={100}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="col-span-1 bg-[var(--input-bg)] border border-glass-border rounded px-2 py-1 text-right text-sm focus:outline-none focus:border-glass-gold"
+      />
+      <span className="col-span-2 text-right text-xs text-glass-text-tertiary">
+        {share}% {shareLabel}
+      </span>
     </div>
   );
 }

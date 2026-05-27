@@ -7,7 +7,8 @@ export type AppSlug =
   | "training"
   | "stats_health"
   | "content_health"
-  | "ops_schedule";
+  | "ops_schedule"
+  | "checklist";
 
 const ENV_KEYS: Record<AppSlug, { url: string; key: string }> = {
   crm:            { url: "CRM_SUPABASE_URL",            key: "CRM_SUPABASE_SERVICE_ROLE_KEY" },
@@ -17,6 +18,7 @@ const ENV_KEYS: Record<AppSlug, { url: string; key: string }> = {
   stats_health:   { url: "STATS_HEALTH_SUPABASE_URL",   key: "STATS_HEALTH_SUPABASE_SERVICE_ROLE_KEY" },
   content_health: { url: "CONTENT_HEALTH_SUPABASE_URL", key: "CONTENT_HEALTH_SUPABASE_SERVICE_ROLE_KEY" },
   ops_schedule:   { url: "OPS_SCHEDULE_SUPABASE_URL",   key: "OPS_SCHEDULE_SUPABASE_SERVICE_ROLE_KEY" },
+  checklist:      { url: "CHECKLIST_SUPABASE_URL",      key: "CHECKLIST_SUPABASE_SERVICE_ROLE_KEY" },
 };
 
 export function sourceClient(slug: AppSlug): SupabaseClient | null {

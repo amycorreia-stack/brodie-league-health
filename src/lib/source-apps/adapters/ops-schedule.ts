@@ -32,7 +32,10 @@ export const opsScheduleAdapter: Adapter = {
     const lmRoleIds = new Set(
       (roles ?? [])
         .filter((r: { name?: string }) => {
-          const tag = (r.name ?? "").toLowerCase();
+          // Match case-insensitively against the spellings used in
+          // brodie-ops-schedule ("League Manager", "District Manager") plus
+          // the underscored aliases used in other Brodie apps.
+          const tag = (r.name ?? "").toLowerCase().replace(/\s+/g, "_");
           return tag === "lm" || tag === "league_manager" || tag === "dm" || tag === "district_manager";
         })
         .map((r: { id: string }) => r.id)
@@ -43,9 +46,12 @@ export const opsScheduleAdapter: Adapter = {
       .select("id, email, full_name, primary_role_id, status");
     if (uErr) return { slug: "ops_schedule", rollups: [], error: uErr.message };
 
+    // accept both 'active' and 'invited' — the app rolled out recently and
+    // most LMs haven't accepted their invite yet, but they're still
+    // operating the league.
     const lms = (users ?? []).filter(
       (u: { primary_role_id: string | null; status: string }) =>
-        u.status === "active" && u.primary_role_id && lmRoleIds.has(u.primary_role_id)
+        (u.status === "active" || u.status === "invited") && u.primary_role_id && lmRoleIds.has(u.primary_role_id)
     ) as Array<{ id: string; email: string }>;
 
     const rollups: LMRollup[] = [];

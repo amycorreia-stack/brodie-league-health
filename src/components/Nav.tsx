@@ -1,21 +1,91 @@
-import Link from "next/link";
 import { getCurrentUser } from "@/lib/auth";
+import { NavLink } from "@/components/NavLink";
+import { ThemeToggle } from "@/components/ThemeToggle";
+import { SignOutButton } from "@/components/SignOutButton";
+
+const BRODIE_B_LOGO =
+  "https://cdn.prod.website-files.com/6921d2c2bd3b56136200df40/69a89a46fa2d0409248fc26f_brodie-b-white.svg";
+
+type NavItem = { href: string; label: string; exact?: boolean };
+const NAV_BASE: NavItem[] = [
+  { href: "/",             label: "My day",      exact: true },
+  { href: "/leaderboard",  label: "Leaderboard" },
+  { href: "/achievements", label: "Trophies"    },
+];
+const NAV_ADMIN: NavItem[] = [
+  { href: "/admin",        label: "Admin"  },
+  { href: "/admin/roster", label: "Roster" },
+];
+
+const ROLE_LABELS: Record<string, string> = {
+  super_admin: "Super Admin",
+  dm: "District Manager",
+  lm: "League Manager",
+};
 
 export async function Nav() {
   const ctx = await getCurrentUser();
-  const role = ctx?.profile?.role;
+  const role = ctx?.profile?.role ?? "lm";
   const isAdmin = role === "dm" || role === "super_admin";
+  const items = isAdmin ? [...NAV_BASE, ...NAV_ADMIN] : NAV_BASE;
+  const fullName = ctx?.profile?.full_name ?? ctx?.user?.email ?? "—";
 
   return (
-    <nav className="border-b border-brodie-line bg-black/60 backdrop-blur sticky top-0 z-10">
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-6 text-sm">
-        <Link href="/" className="font-display font-bold text-base">League Health</Link>
-        <Link href="/" className="text-brodie-dim hover:text-white">My day</Link>
-        <Link href="/leaderboard" className="text-brodie-dim hover:text-white">Leaderboard</Link>
-        {isAdmin && <Link href="/admin" className="text-brodie-accent hover:opacity-90">Admin</Link>}
-        {isAdmin && <Link href="/admin/roster" className="text-brodie-dim hover:text-white">Roster</Link>}
-        <span className="ml-auto text-brodie-dim text-xs">{ctx?.user?.email}</span>
+    <header
+      className="app-nav flex items-stretch px-6"
+      style={{
+        height: 56,
+        flexShrink: 0,
+        background: "var(--glass-background)",
+        borderBottom: "1px solid var(--glass-border-light)",
+        position: "sticky",
+        top: 0,
+        zIndex: 10,
+      }}
+    >
+      <div className="flex items-center gap-3 h-full select-none">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={BRODIE_B_LOGO}
+          alt="Brodie"
+          className="brodie-logo"
+          style={{ height: 22, width: "auto", display: "block" }}
+        />
+        <span
+          className="text-[13px] font-bold tracking-[0.04em] uppercase hidden sm:inline"
+          style={{ color: "var(--glass-gold)" }}
+        >
+          League Health
+        </span>
       </div>
-    </nav>
+
+      <nav className="flex items-stretch gap-1 h-full ml-6">
+        {items.map((item) => (
+          <NavLink key={item.href} href={item.href} label={item.label} exact={item.exact} />
+        ))}
+      </nav>
+
+      <div className="ml-auto flex items-center gap-4 h-full">
+        <div className="hidden sm:flex flex-col items-end leading-tight">
+          <span style={{ fontSize: 12, fontWeight: 600, color: "var(--glass-text)" }}>
+            {fullName}
+          </span>
+          <span
+            className="font-mono"
+            style={{
+              fontSize: 10,
+              letterSpacing: "0.06em",
+              textTransform: "uppercase",
+              color: "var(--glass-gold)",
+              fontWeight: 600,
+            }}
+          >
+            {ROLE_LABELS[role] ?? role}
+          </span>
+        </div>
+        <ThemeToggle />
+        <SignOutButton />
+      </div>
+    </header>
   );
 }

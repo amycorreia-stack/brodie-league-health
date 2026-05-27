@@ -1,6 +1,7 @@
 import { requireRole } from "@/lib/auth";
 import { sourceConfigured, type AppSlug } from "@/lib/source-apps/clients";
 import { createAdminClient } from "@/lib/supabase/admin";
+import { SeedDemoButton } from "@/components/SeedDemoButton";
 
 type Check = { name: string; ok: boolean; detail?: string };
 
@@ -37,11 +38,10 @@ async function buildChecks(): Promise<Check[]> {
     checks.push({
       name: `${a.name} adapter`,
       ok: cfg,
-      detail: cfg ? "URL + service-role key present." : `Set ${a.slug.toUpperCase()}_SUPABASE_URL and _SERVICE_ROLE_KEY in Vercel.`,
+      detail: cfg ? "URL + service-role key present." : `Set ${a.slug.toUpperCase()}_SUPABASE_URL and _SERVICE_ROLE_KEY.`,
     });
   }
 
-  // basic schema sanity
   try {
     const sb = createAdminClient();
     const { count } = await sb.from("apps").select("*", { count: "exact", head: true });
@@ -60,31 +60,33 @@ export default async function SetupDoctor() {
   return (
     <main className="space-y-6">
       <header>
-        <h1 className="text-3xl font-display font-bold">Setup doctor</h1>
-        <p className="text-brodie-dim text-sm">
+        <h1 className="text-3xl font-semibold tracking-tight">Setup doctor</h1>
+        <p className="text-glass-text-secondary text-sm mt-1">
           Status of env vars and adapter wiring. Fix anything red before the first cron.
         </p>
       </header>
 
-      <div className={`rounded-xl border p-4 ${allOk ? "border-brodie-good/40 bg-brodie-good/10" : "border-brodie-warn/40 bg-brodie-warn/10"}`}>
+      <div className={`rounded-2xl border p-4 ${allOk ? "border-green-500/30 bg-green-500/10" : "border-yellow-500/30 bg-yellow-500/10"}`}>
         <p className="font-semibold">{allOk ? "All checks pass." : "Some checks are red — see below."}</p>
       </div>
 
-      <div className="rounded-xl border border-brodie-line overflow-hidden">
+      <SeedDemoButton />
+
+      <div className="rounded-2xl border border-glass-border bg-glass-surface overflow-hidden">
         <table className="w-full text-sm">
-          <thead className="bg-black/40 text-brodie-dim uppercase text-xs">
+          <thead className="bg-glass-surface-hover text-glass-text-tertiary uppercase text-[10px] tracking-wider">
             <tr>
               <th className="text-left p-3 w-10"></th>
-              <th className="text-left p-3">Check</th>
-              <th className="text-left p-3">Detail</th>
+              <th className="text-left p-3 font-semibold">Check</th>
+              <th className="text-left p-3 font-semibold">Detail</th>
             </tr>
           </thead>
           <tbody>
             {checks.map((c) => (
-              <tr key={c.name} className="border-t border-brodie-line">
-                <td className="p-3 text-lg">{c.ok ? <span className="text-brodie-good">●</span> : <span className="text-brodie-bad">●</span>}</td>
+              <tr key={c.name} className="border-t border-glass-border-light">
+                <td className="p-3 text-lg">{c.ok ? <span className="text-green-400">●</span> : <span className="text-red-400">●</span>}</td>
                 <td className="p-3 font-mono text-xs">{c.name}</td>
-                <td className="p-3 text-brodie-dim text-xs">{c.detail}</td>
+                <td className="p-3 text-glass-text-tertiary text-xs">{c.detail}</td>
               </tr>
             ))}
           </tbody>

@@ -1,24 +1,38 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
-  content: ["./src/**/*.{ts,tsx}"],
+  content: ["./src/**/*.{js,ts,jsx,tsx,mdx}"],
+  darkMode: ["selector", '[data-theme="dark"]'],
   theme: {
     extend: {
       colors: {
         brodie: {
-          ink: "#0a0a0a",
-          card: "#111111",
-          line: "#1f1f1f",
-          dim: "#666",
-          fg: "#f5f5f5",
-          accent: "#ff5b1f",
-          good: "#22c55e",
-          warn: "#f59e0b",
-          bad: "#ef4444",
+          orange: "#FFB800",
+          gold: "#FFB800",
+          ink: "#0E0E0E",
+          cream: "#FFF7EE",
+        },
+        glass: {
+          bg: "var(--glass-background)",
+          surface: "var(--glass-surface)",
+          "surface-hover": "var(--glass-surface-hover)",
+          "surface-active": "var(--glass-surface-active)",
+          border: "var(--glass-border)",
+          "border-light": "var(--glass-border-light)",
+          text: "var(--glass-text)",
+          "text-secondary": "var(--glass-text-secondary)",
+          "text-tertiary": "var(--glass-text-tertiary)",
+          gold: "var(--glass-gold)",
+          red: "var(--glass-red)",
+          green: "var(--glass-green)",
+          blue: "var(--glass-blue)",
+          yellow: "var(--glass-yellow)",
+          purple: "var(--glass-purple)",
         },
       },
       fontFamily: {
-        display: ["var(--font-display)", "Inter", "system-ui", "sans-serif"],
+        sans: ["var(--font-inter)", "-apple-system", "BlinkMacSystemFont", "sans-serif"],
+        mono: ["var(--font-plex-mono)", "IBM Plex Mono", "ui-monospace", "monospace"],
       },
     },
   },

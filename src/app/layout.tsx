@@ -1,6 +1,20 @@
 import "./globals.css";
 import type { Metadata } from "next";
-import { Nav } from "@/components/Nav";
+import { Inter, IBM_Plex_Mono } from "next/font/google";
+import { ThemeScript } from "@/components/ThemeScript";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const plexMono = IBM_Plex_Mono({
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+  variable: "--font-plex-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "Brodie League Health",
@@ -9,10 +23,12 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-brodie-ink text-brodie-fg">
-        <Nav />
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6">{children}</div>
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <ThemeScript />
+      </head>
+      <body className={`${inter.variable} ${plexMono.variable} min-h-screen bg-glass-bg text-glass-text font-sans antialiased`}>
+        {children}
       </body>
     </html>
   );

@@ -40,8 +40,10 @@ export async function syncRoster(): Promise<{ synced: number; error?: string }> 
   const all = (managers ?? []) as CrmManager[];
   const byId = new Map(all.map((m) => [m.id, m]));
 
+  // DMs are admins, not LMs. They sign in to league-health, view their
+  // LMs via /admin, but don't appear on the leaderboard themselves.
   const rows = all
-    .filter((m) => m.role === "league_manager" || m.role === "district_manager")
+    .filter((m) => m.role === "league_manager")
     .map((m) => {
       const firstLoc = (m.assigned_locations ?? [])[0];
       const dm = m.reports_to ? byId.get(m.reports_to) : undefined;

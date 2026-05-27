@@ -1,85 +1,157 @@
 import type { Adapter, AdapterResult, LMRollup } from "../types";
 import { sourceClient, sourceConfigured } from "../clients";
 import { ymd, daysAgo } from "../util";
+import { listLMsFromCRM, resolveLocationsForLM } from "../cross-app-locations";
 
 /**
- * brodie-content-health verified schema:
- *   profiles: id, email, full_name, role (lm|content_ops|dm|finance|admin), active
- *   user_locations: user_id, location_id
- *   content_nights: id, location_id, date, iphone_clips_posted_at,
- *                   photos_posted_at, videos_posted_at
+ * brodie-content-health — clips-per-hour scoring (v2, locked 2026-05-27).
  *
- * Sub-metric:
- *   content_in_48h (100%) — % of last 14d content_nights where videos_posted_at
- *                            is within 48h of the night's date.
- *                            (iPhone clips have 12h SLA, photos 3d, videos 4d
- *                             per the source schema comments, but we pick a
- *                             single signal for v1 — videos at 48h is mid-tier
- *                             ambition. Adjust by editing this file.)
+ * Each content_night gets scored once, on the day AFTER it occurs:
+ *
+ *   content_ratio_hit       +10  if iphone_clips_count >= 20 * ahs_hours
+ *   content_ratio_miss      -3   if clips_count < 20 * ahs_hours (and both not null)
+ *   content_post_12h_bonus  +3   if iphone_clips_posted_at within 12h of
+ *                                  night's end (night.date + 24h)
+ *
+ * Plus the continuous penalty:
+ *   content_never_posted    -2 each day per night >7 days old where
+ *                                iphone_clips_posted_at is null.
  */
+const TARGET_RATIO = 20;
+const BONUS_WINDOW_HOURS = 12;
+
 export const contentHealthAdapter: Adapter = {
   slug: "content_health",
   async sync(snapshotDate: Date): Promise<AdapterResult> {
     if (!sourceConfigured("content_health")) return { slug: "content_health", rollups: [], unconfigured: true };
     const sb = sourceClient("content_health")!;
-    const fourteenAgo = ymd(daysAgo(snapshotDate, 14));
 
-    const { data: profiles, error: pErr } = await sb
-      .from("profiles")
-      .select("id, email, full_name, role, active");
-    if (pErr) return { slug: "content_health", rollups: [], error: pErr.message };
-    const lms = (profiles ?? []).filter(
-      (p: { role: string; active: boolean }) => (p.role === "lm" || p.role === "dm") && p.active
-    ) as Array<{ id: string; email: string }>;
+    const todayStr = ymd(snapshotDate);
+    const yesterdayStr = ymd(daysAgo(snapshotDate, 1));
+    const thirtyDaysAgo = ymd(daysAgo(snapshotDate, 30));
 
+    const lms = await listLMsFromCRM();
     const rollups: LMRollup[] = [];
-    for (const lm of lms) {
-      const { data: links } = await sb
-        .from("user_locations")
-        .select("location_id")
-        .eq("user_id", lm.id);
-      const locationIds = (links ?? []).map((l: { location_id: string }) => l.location_id);
 
+    for (const lm of lms) {
+      const locationIds = await resolveLocationsForLM("content_health", lm.email);
       const rollup: LMRollup = { lm_email: lm.email, metrics: [], action_items: [] };
+
       if (!locationIds.length) {
-        rollup.metrics.push({ metric_slug: "content_in_48h", raw_value: 100, max_score: 100, score: 100 });
         rollups.push(rollup);
         continue;
       }
 
       const { data: nights } = await sb
         .from("content_nights")
-        .select("id, location_id, date, videos_posted_at, photos_posted_at, iphone_clips_posted_at")
+        .select("id, location_id, date, ahs_hours, iphone_clips_count, iphone_clips_posted_at")
         .in("location_id", locationIds)
-        .gte("date", fourteenAgo)
-        .lte("date", ymd(snapshotDate));
+        .gte("date", thirtyDaysAgo)
+        .lte("date", todayStr);
 
-      const eligible = (nights ?? []) as Array<{ date: string; videos_posted_at: string | null }>;
-      const onTime = eligible.filter((n) => {
-        if (!n.videos_posted_at) return false;
-        const nightEnd = new Date(n.date + "T23:59:00Z").getTime();
-        return new Date(n.videos_posted_at).getTime() - nightEnd <= 48 * 3600 * 1000;
-      });
-      const pct = eligible.length ? Math.round((onTime.length / eligible.length) * 100) : 100;
+      type Night = {
+        id: string;
+        location_id: string;
+        date: string;
+        ahs_hours: number | null;
+        iphone_clips_count: number | null;
+        iphone_clips_posted_at: string | null;
+      };
+      const allNights = (nights ?? []) as Night[];
 
-      rollup.metrics.push({
-        metric_slug: "content_in_48h",
-        raw_value: pct,
-        max_score: 100,
-        score: pct,
-        payload: { window_days: 14, total: eligible.length, on_time: onTime.length },
-      });
+      // ----- Score YESTERDAY's nights once: ratio + 12h bonus -----
+      const yesterdayNights = allNights.filter((n) => n.date === yesterdayStr);
+      let ratioHitXp = 0, ratioHitCount = 0;
+      let ratioMissXp = 0, ratioMissCount = 0;
+      let bonusXp = 0, bonusCount = 0;
 
-      const missing = eligible.length - onTime.length;
-      if (pct < 80 && eligible.length > 0) {
+      for (const n of yesterdayNights) {
+        if (n.iphone_clips_count != null && n.ahs_hours != null && n.ahs_hours > 0) {
+          const target = TARGET_RATIO * Number(n.ahs_hours);
+          if (n.iphone_clips_count >= target) {
+            ratioHitXp += 10;
+            ratioHitCount++;
+            rollup.action_items.push({
+              metric_slug: "content_ratio_hit",
+              title: `Hit clip target on ${n.date} (${n.iphone_clips_count}/${target.toFixed(0)} clips, +10 XP)`,
+              severity: "low",
+            });
+          } else {
+            ratioMissXp -= 3;
+            ratioMissCount++;
+            rollup.action_items.push({
+              metric_slug: "content_ratio_miss",
+              title: `Missed clip target on ${n.date} (${n.iphone_clips_count}/${target.toFixed(0)} clips, −3 XP)`,
+              detail: `${(20 - n.iphone_clips_count / Number(n.ahs_hours)).toFixed(1)} clips/hour short of target.`,
+              severity: "medium",
+            });
+          }
+        }
+        if (n.iphone_clips_posted_at) {
+          const nightEnd = new Date(n.date + "T23:59:59Z").getTime();
+          const posted = new Date(n.iphone_clips_posted_at).getTime();
+          if (posted - nightEnd <= BONUS_WINDOW_HOURS * 3600 * 1000) {
+            bonusXp += 3;
+            bonusCount++;
+          }
+        }
+      }
+
+      // ----- Continuous penalty: nights >7d old with no posted_at -----
+      const sevenAgo = ymd(daysAgo(snapshotDate, 7));
+      const ghosted = allNights.filter((n) => n.date < sevenAgo && !n.iphone_clips_posted_at);
+      const ghostedXp = ghosted.length * -2;
+
+      for (const g of ghosted.slice(0, 5)) {
         rollup.action_items.push({
-          metric_slug: "content_in_48h",
-          title: `${missing} content night${missing === 1 ? "" : "s"} missed the 48h video-post window`,
-          severity: pct < 50 ? "high" : "medium",
+          metric_slug: "content_never_posted",
+          title: `Night ${g.date} still has no iPhone clips posted (-2 XP/day)`,
+          detail: "Post the clips to IG stories to stop the bleed.",
+          severity: "high",
+          source_ref: `content_health://nights/${g.id}`,
         });
       }
+      if (ghosted.length > 5) {
+        rollup.action_items.push({
+          metric_slug: "content_never_posted",
+          title: `+${ghosted.length - 5} more never-posted content nights at your locations`,
+          severity: "high",
+        });
+      }
+
+      // ----- Emit metric snapshots -----
+      rollup.metrics.push({
+        metric_slug: "content_ratio_hit",
+        raw_value: ratioHitCount,
+        max_score: yesterdayNights.length * 10,
+        score: ratioHitXp,
+        payload: { ratio_hit_count: ratioHitCount, nights_yesterday: yesterdayNights.length },
+      });
+      rollup.metrics.push({
+        metric_slug: "content_ratio_miss",
+        raw_value: ratioMissCount,
+        max_score: 0,
+        score: ratioMissXp,
+        payload: { ratio_miss_count: ratioMissCount },
+      });
+      rollup.metrics.push({
+        metric_slug: "content_post_12h_bonus",
+        raw_value: bonusCount,
+        max_score: yesterdayNights.length * 3,
+        score: bonusXp,
+        payload: { bonus_count: bonusCount },
+      });
+      rollup.metrics.push({
+        metric_slug: "content_never_posted",
+        raw_value: ghosted.length,
+        max_score: 0,
+        score: ghostedXp,
+        payload: { ghosted_count: ghosted.length },
+      });
+
       rollups.push(rollup);
     }
+
     return { slug: "content_health", rollups };
   },
 };

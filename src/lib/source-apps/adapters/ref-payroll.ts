@@ -1,110 +1,234 @@
 import type { Adapter, AdapterResult, LMRollup } from "../types";
 import { sourceClient, sourceConfigured } from "../clients";
 import { ymd, daysAgo } from "../util";
+import { isWeekend } from "../business-days";
+import { listLMsFromCRM, resolveLocationsForLM } from "../cross-app-locations";
 
 /**
- * brodie-ref-payroll verified schema:
- *   profiles: id, email, full_name, role (lm|dm|payroll|vp|admin), slack_user_id, active
- *   user_locations: user_id, location_id
- *   submissions: id, location_id, pay_period_start (Sat), pay_period_end (Fri),
- *                status (submission_status), submitted_at, paid_at,
- *                dm_decided_at, payroll_decided_at, vp_decided_at
+ * brodie-ref-payroll — deadline-driven scoring (v2, locked 2026-05-27).
  *
- * "On time" target: refs paid by Tuesday after the pay_period_end (5 days).
+ * Pay periods are Sat→Fri. The deadline to have both submitted AND approved
+ * is the Monday after pay_period_end at 12:00 PM America/New_York.
  *
- * Sub-metrics:
- *   payouts_on_time (80%) — % of last 4 pay periods where submission.paid_at
- *                           is within 5 days of pay_period_end
- *   no_overdue      (20%) — count of submissions where pay_period_end was
- *                           > 7 days ago and paid_at is still null
+ * Scoring per submission (per LM, per LM's locations):
+ *   ref_payroll_on_time   +15 ONCE, awarded on the deadline day if both
+ *                              submitted_at AND dm_decided_at are < deadline
+ *   ref_payroll_late_hit  -15 ONCE, applied on the deadline day if at deadline
+ *                              time either field is null
+ *   ref_payroll_drag      -3 each weekday after the deadline while either
+ *                              field is still null (stops once both set)
+ *
+ * Per-app xp_floor (-20 default) caps the negative side across these three.
  */
+
+const ET_TZ = "America/New_York";
+
+function hourInTZ(d: Date, tz: string): number {
+  const f = new Intl.DateTimeFormat("en-US", { timeZone: tz, hour: "numeric", hour12: false });
+  return parseInt(f.format(d), 10);
+}
+function dowInTZ(d: Date, tz: string): number {
+  // 0 = Sunday, 1 = Monday, etc.
+  const f = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "short" });
+  const s = f.format(d);
+  return ({ Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 } as Record<string, number>)[s];
+}
+function dateInTZ(d: Date, tz: string): string {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+}
+
+/** Most recent Friday on or before `d` (in ET). */
+function mostRecentFridayET(d: Date): Date {
+  const dow = dowInTZ(d, ET_TZ);
+  // distance back to Friday (5)
+  const back = (dow - 5 + 7) % 7; // if today is Fri, back=0
+  const result = new Date(d);
+  result.setUTCDate(result.getUTCDate() - back);
+  return result;
+}
+
+/** Build a Date that represents 12:00 noon ET on the given calendar date in ET. */
+function noonETOnDate(etDateStr: string): Date {
+  // etDateStr is YYYY-MM-DD in ET. Brute-force: try noon UTC, then shift.
+  // The TZ offset for ET is -4 (DST) or -5. We try both and pick the one whose
+  // ET hour rendering = 12.
+  for (const offset of [4, 5]) {
+    const d = new Date(`${etDateStr}T${String(12 + offset).padStart(2, "0")}:00:00Z`);
+    if (hourInTZ(d, ET_TZ) === 12 && dateInTZ(d, ET_TZ) === etDateStr) return d;
+  }
+  // Fallback (shouldn't hit): 16:00 UTC ≈ noon EDT.
+  return new Date(`${etDateStr}T16:00:00Z`);
+}
+
+/** Monday after the given Friday (returns the ET calendar date YYYY-MM-DD). */
+function mondayAfterFridayET(fridayUTC: Date): string {
+  const d = new Date(fridayUTC);
+  d.setUTCDate(d.getUTCDate() + 3);
+  return dateInTZ(d, ET_TZ);
+}
+
+/** Count weekdays (Mon-Fri ET) strictly after `fromET` and through `toUTC`. */
+function weekdaysSinceET(fromETDateStr: string, toUTC: Date): number {
+  const start = new Date(`${fromETDateStr}T16:00:00Z`); // approx noon ET
+  if (toUTC <= start) return 0;
+  let count = 0;
+  const cursor = new Date(start);
+  cursor.setUTCDate(cursor.getUTCDate() + 1);
+  while (cursor <= toUTC) {
+    if (!isWeekend(cursor)) count++;
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return count;
+}
+
 export const refPayrollAdapter: Adapter = {
   slug: "ref_payroll",
   async sync(snapshotDate: Date): Promise<AdapterResult> {
     if (!sourceConfigured("ref_payroll")) return { slug: "ref_payroll", rollups: [], unconfigured: true };
     const sb = sourceClient("ref_payroll")!;
-    const today = ymd(snapshotDate);
-    const twentyEightAgo = ymd(daysAgo(snapshotDate, 28));
-    const sevenAgo = ymd(daysAgo(snapshotDate, 7));
 
-    const { data: profiles, error: pErr } = await sb
-      .from("profiles")
-      .select("id, email, full_name, role, active");
-    if (pErr) return { slug: "ref_payroll", rollups: [], error: pErr.message };
-    const lms = (profiles ?? []).filter(
-      (p: { role: string; active: boolean }) => (p.role === "lm" || p.role === "dm") && p.active
-    ) as Array<{ id: string; email: string }>;
+    const todayUTC = snapshotDate;
+    const todayET = dateInTZ(todayUTC, ET_TZ);
+    const todayDow = dowInTZ(todayUTC, ET_TZ);
+    const todayHourET = hourInTZ(todayUTC, ET_TZ);
 
+    // Pay periods to evaluate: last 4 weeks of Friday-endings prior to today.
+    // (Most recent Friday strictly before today, going back 4 weeks.)
+    const friCutoff = mostRecentFridayET(todayUTC);
+    const periods: Array<{ pay_period_end: string }> = [];
+    for (let i = 0; i < 4; i++) {
+      const d = new Date(friCutoff);
+      d.setUTCDate(d.getUTCDate() - 7 * i);
+      // skip the current week if today is before Friday (period hasn't closed)
+      if (dateInTZ(d, ET_TZ) >= todayET && i === 0) continue;
+      periods.push({ pay_period_end: dateInTZ(d, ET_TZ) });
+    }
+    if (!periods.length) return { slug: "ref_payroll", rollups: [] };
+
+    const fourteenAgo = ymd(daysAgo(snapshotDate, 28));
+
+    const lms = await listLMsFromCRM();
     const rollups: LMRollup[] = [];
-    for (const lm of lms) {
-      const { data: links } = await sb
-        .from("user_locations")
-        .select("location_id")
-        .eq("user_id", lm.id);
-      const locationIds = (links ?? []).map((l: { location_id: string }) => l.location_id);
 
+    for (const lm of lms) {
       const rollup: LMRollup = { lm_email: lm.email, metrics: [], action_items: [] };
+
+      const locationIds = await resolveLocationsForLM("ref_payroll", lm.email);
+
       if (!locationIds.length) {
-        rollup.metrics.push({ metric_slug: "payouts_on_time", raw_value: 100, max_score: 100, score: 100 });
-        rollup.metrics.push({ metric_slug: "no_overdue",      raw_value: 0,   max_score: 100, score: 100 });
+        // Emit zero-snapshots so the adapter has consistent presence.
+        rollup.metrics.push({ metric_slug: "ref_payroll_on_time",  raw_value: 0, max_score: 0, score: 0 });
+        rollup.metrics.push({ metric_slug: "ref_payroll_late_hit", raw_value: 0, max_score: 0, score: 0 });
+        rollup.metrics.push({ metric_slug: "ref_payroll_drag",     raw_value: 0, max_score: 0, score: 0 });
         rollups.push(rollup);
         continue;
       }
 
-      const { data: submissions } = await sb
+      // pull all submissions for these locations in the relevant window.
+      const periodEnds = periods.map((p) => p.pay_period_end);
+      const { data: subs } = await sb
         .from("submissions")
-        .select("id, location_id, pay_period_start, pay_period_end, paid_at, status")
+        .select("id, location_id, pay_period_start, pay_period_end, submitted_at, dm_decided_at, status")
         .in("location_id", locationIds)
-        .gte("pay_period_start", twentyEightAgo);
+        .gte("pay_period_start", fourteenAgo);
 
-      const subs = (submissions ?? []) as Array<{ id: string; pay_period_end: string; paid_at: string | null; status: string }>;
-      const due = subs.filter((s) => s.pay_period_end <= today);
+      type Sub = {
+        id: string; location_id: string;
+        pay_period_start: string; pay_period_end: string;
+        submitted_at: string | null; dm_decided_at: string | null;
+      };
+      const subList = (subs ?? []) as Sub[];
 
-      const onTime = due.filter((s) => {
-        if (!s.paid_at) return false;
-        const paidDate = s.paid_at.slice(0, 10);
-        // 5 days after Friday = following Wednesday; we allow Tue+1
-        const target = new Date(s.pay_period_end);
-        target.setUTCDate(target.getUTCDate() + 5);
-        return paidDate <= target.toISOString().slice(0, 10);
-      }).length;
+      let onTimeXp = 0;
+      let lateHitXp = 0;
+      let dragXp = 0;
 
-      const overdue = due.filter((s) => !s.paid_at && s.pay_period_end < sevenAgo);
+      let onTimeCount = 0;
+      let lateHitCount = 0;
+      let dragSubmissions = 0;
 
-      const onTimeScore = due.length ? Math.round((onTime / due.length) * 100) : 100;
-      rollup.metrics.push({
-        metric_slug: "payouts_on_time",
-        raw_value: onTime,
-        max_score: 100,
-        score: onTimeScore,
-        payload: { window_days: 28, total: due.length, on_time: onTime },
-      });
-      if (onTimeScore < 90 && due.length > 0) {
-        rollup.action_items.push({
-          metric_slug: "payouts_on_time",
-          title: `${due.length - onTime} ref payouts went out late in the last 4 weeks`,
-          severity: onTimeScore < 70 ? "high" : "medium",
-        });
+      // For each location, ensure we have a row (virtual or real) per period
+      for (const locId of locationIds) {
+        for (const periodEnd of periodEnds) {
+          const deadlineDateET = mondayAfterFridayET(new Date(`${periodEnd}T00:00:00Z`));
+          const deadlineUTC = noonETOnDate(deadlineDateET);
+          const sub = subList.find((s) => s.location_id === locId && s.pay_period_end === periodEnd);
+
+          // Has the deadline passed (in ET) yet?
+          const todayPastDeadline =
+            todayET > deadlineDateET ||
+            (todayET === deadlineDateET && todayHourET >= 12);
+
+          const submittedInTime = !!sub?.submitted_at && new Date(sub.submitted_at) < deadlineUTC;
+          const approvedInTime  = !!sub?.dm_decided_at && new Date(sub.dm_decided_at) < deadlineUTC;
+          const bothInTime = submittedInTime && approvedInTime;
+          const eitherStillNull = !sub?.submitted_at || !sub?.dm_decided_at;
+
+          if (todayET === deadlineDateET && todayHourET >= 12) {
+            // Deadline day, past noon ET. Score the one-time outcomes today.
+            if (bothInTime) { onTimeXp += 15; onTimeCount++; }
+            else            { lateHitXp -= 15; lateHitCount++; }
+          }
+
+          if (todayPastDeadline && todayET !== deadlineDateET && eitherStillNull) {
+            // It's a weekday after deadline and the submission is still unsettled.
+            if (!isWeekend(todayUTC)) {
+              dragXp -= 3;
+              dragSubmissions++;
+            }
+          }
+
+          // ----- Action items -----
+          // Monday 6am-noon ET on the deadline day, and still unsettled.
+          if (todayET === deadlineDateET && todayHourET < 12 && eitherStillNull) {
+            rollup.action_items.push({
+              metric_slug: "ref_payroll_on_time",
+              title: `Submit + approve last week's ref payroll (period ending ${periodEnd}) by 12pm ET`,
+              detail: "Both submit AND DM-approve before noon → +15 XP. Miss it and you'll lose 15 XP, plus 3/day until it's done.",
+              severity: "high",
+              source_ref: `ref_payroll://submissions?location=${locId}&period=${periodEnd}`,
+            });
+          }
+          // After Monday noon and still unsettled — flip to critical
+          if (todayPastDeadline && eitherStillNull) {
+            const days = weekdaysSinceET(deadlineDateET, todayUTC);
+            const cost = 15 + days * 3;
+            rollup.action_items.push({
+              metric_slug: "ref_payroll_drag",
+              title: `LATE: ref payroll for period ending ${periodEnd} — already cost you ${cost} XP`,
+              detail: `${days} weekday${days === 1 ? "" : "s"} past deadline. Each additional weekday costs another 3 XP until both submit + approve are done.`,
+              severity: "critical",
+              source_ref: `ref_payroll://submissions?location=${locId}&period=${periodEnd}`,
+            });
+          }
+        }
       }
 
-      const overdueScore = Math.max(0, 100 - overdue.length * 25);
       rollup.metrics.push({
-        metric_slug: "no_overdue",
-        raw_value: overdue.length,
-        max_score: 100,
-        score: overdueScore,
-        payload: { overdue_count: overdue.length },
+        metric_slug: "ref_payroll_on_time",
+        raw_value: onTimeCount,
+        max_score: 15 * (periodEnds.length * locationIds.length),
+        score: onTimeXp,
+        payload: { on_time_today: onTimeCount },
       });
-      if (overdue.length > 0) {
-        rollup.action_items.push({
-          metric_slug: "no_overdue",
-          title: `${overdue.length} ref payout${overdue.length > 1 ? "s" : ""} overdue by 7+ days`,
-          severity: "critical",
-        });
-      }
+      rollup.metrics.push({
+        metric_slug: "ref_payroll_late_hit",
+        raw_value: lateHitCount,
+        max_score: 0,
+        score: lateHitXp,
+        payload: { late_today: lateHitCount },
+      });
+      rollup.metrics.push({
+        metric_slug: "ref_payroll_drag",
+        raw_value: dragSubmissions,
+        max_score: 0,
+        score: dragXp,
+        payload: { dragging_submissions: dragSubmissions },
+      });
 
       rollups.push(rollup);
     }
+
     return { slug: "ref_payroll", rollups };
   },
 };

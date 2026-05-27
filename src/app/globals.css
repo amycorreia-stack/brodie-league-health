@@ -2,11 +2,84 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
+/* Brodie League Health — mirrors brodie-facilities glass tokens. */
+
+:root, [data-theme="dark"] {
+  --glass-gold: #FFB800;
+  --glass-gold-dark: #CC9300;
+  --glass-gold-light: #FFD666;
+
+  --glass-red: #CE152D;
+  --glass-red-dark: #9E0F22;
+  --glass-red-light: #F06B7A;
+
+  --glass-green: #15803d;
+  --glass-green-dark: #0F6530;
+  --glass-green-light: #4ADE80;
+
+  --glass-blue: #007aff;
+  --glass-blue-dark: #0055CC;
+  --glass-blue-light: #66B2FF;
+
+  --glass-yellow: #D4960D;
+  --glass-yellow-dark: #A67508;
+  --glass-yellow-light: #F5C842;
+
+  --glass-purple: #af52de;
+  --glass-purple-dark: #8B3DB2;
+  --glass-purple-light: #D499EE;
+
+  --glass-background: #000000;
+  --glass-surface: #1c1c1e;
+  --glass-surface-hover: #2c2c2e;
+  --glass-surface-active: #3a3a3c;
+  --glass-border: #38383a;
+  --glass-border-light: #2c2c2e;
+  --glass-text: #f5f5f7;
+  --glass-text-secondary: #a1a1a6;
+  --glass-text-tertiary: #636366;
+
+  --input-bg: #000000;
+
   color-scheme: dark;
 }
 
+[data-theme="light"] {
+  --glass-background: #ffffff;
+  --glass-surface: #f5f5f7;
+  --glass-surface-hover: #ebebed;
+  --glass-surface-active: #e0e0e2;
+  --glass-border: #d2d2d7;
+  --glass-border-light: #e5e5ea;
+  --glass-text: #1d1d1f;
+  --glass-text-secondary: #6e6e73;
+  --glass-text-tertiary: #aeaeb2;
+
+  --input-bg: #ffffff;
+
+  color-scheme: light;
+}
+
 html, body {
-  background: #0a0a0a;
-  color: #f5f5f5;
+  background: var(--glass-background);
+  color: var(--glass-text);
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+/* In light mode, the sticky nav uses a translucent white surface */
+[data-theme="light"] nav.app-nav {
+  background: rgba(255, 255, 255, 0.7) !important;
+}
+
+/* Brodie B logo is white SVG — invert in light mode so it's visible */
+[data-theme="light"] nav.app-nav img[alt="Brodie"] {
+  filter: invert(1);
+}
+
+.brodie-fade-in {
+  animation: brodieFadeIn 220ms ease-out;
+}
+@keyframes brodieFadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }

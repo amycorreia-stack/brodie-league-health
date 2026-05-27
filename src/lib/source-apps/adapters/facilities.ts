@@ -1,81 +1,130 @@
 import type { Adapter, AdapterResult, LMRollup } from "../types";
 import { sourceClient, sourceConfigured } from "../clients";
 import { ymd, daysAhead } from "../util";
+import { addBusinessDays, businessDaysBetween } from "../business-days";
+import { listLMsFromCRM, resolveFacilityCitiesForLM } from "../cross-app-locations";
 
 /**
- * brodie-facilities verified schema:
- *   profiles: id, email, full_name, role (enum: lm|dm|finance|admin), active
- *   user_facilities: user_id, facility_id (composite PK)
- *   invoices: facility_id, scheduled_pay_date (date), paid_date (date),
- *             status (enum: 'unpaid' | 'scheduled' | 'paid'), amount_cents
- *   contracts: facility_id, effective_start (date), effective_end (date), signed_date
+ * brodie-facilities — task-based scoring (v2, locked 2026-05-27).
+ *
+ * LMs are identified by the CRM managers list and scoped to facilities whose
+ * `city` matches their assigned CRM location names (via fuzzy match).
+ * They don't need a profile in the facilities app at all.
  *
  * Sub-metrics:
- *   invoice_on_time    (60%) — % open invoices NOT past scheduled_pay_date
- *   contract_gap_risk  (40%) — penalty per facility with no active contract,
- *                              or current contract ending in <30d with no follow-on
+ *   invoice_followup (+5 each when resolved)  — action items per open
+ *     invoice with scheduled_pay_date in next 4 business days. XP awarded
+ *     by /api/me/action-resolve when LM clicks Done.
+ *
+ *   invoice_overdue (-3 per overdue invoice)  — applied today.
+ *
+ *   contract_gap (-3 per facility per day)  — active contract ending <30 days
+ *     and no follow-on signed.
  */
+
+const NOT_SCORED_STATUSES = ["paid", "void"];
+
 export const facilitiesAdapter: Adapter = {
   slug: "facilities",
   async sync(snapshotDate: Date): Promise<AdapterResult> {
     if (!sourceConfigured("facilities")) return { slug: "facilities", rollups: [], unconfigured: true };
     const sb = sourceClient("facilities")!;
+
     const today = ymd(snapshotDate);
+    const fourBDOut = ymd(addBusinessDays(snapshotDate, 4));
     const thirtyAhead = ymd(daysAhead(snapshotDate, 30));
     const sixtyAhead = ymd(daysAhead(snapshotDate, 60));
 
-    const { data: profiles, error: pErr } = await sb
-      .from("profiles")
-      .select("id, email, full_name, role, active");
-    if (pErr) return { slug: "facilities", rollups: [], error: pErr.message };
-    const lms = (profiles ?? []).filter(
-      (p: { role: string; active: boolean }) => (p.role === "lm" || p.role === "dm") && p.active
-    ) as Array<{ id: string; email: string }>;
-
+    const lms = await listLMsFromCRM();
     const rollups: LMRollup[] = [];
-    for (const lm of lms) {
-      const { data: links } = await sb
-        .from("user_facilities")
-        .select("facility_id")
-        .eq("user_id", lm.id);
-      const facilityIds = (links ?? []).map((l: { facility_id: string }) => l.facility_id);
 
+    for (const lm of lms) {
       const rollup: LMRollup = { lm_email: lm.email, metrics: [], action_items: [] };
 
-      if (!facilityIds.length) {
-        rollup.metrics.push({ metric_slug: "invoice_on_time", raw_value: 100, max_score: 100, score: 100 });
-        rollup.metrics.push({ metric_slug: "contract_gap_risk", raw_value: 0, max_score: 100, score: 100 });
+      const cities = await resolveFacilityCitiesForLM(lm.email);
+      if (!cities.length) {
+        // No facilities at this LM's locations — no metrics emitted.
         rollups.push(rollup);
         continue;
       }
 
-      // invoice_on_time
-      const { data: invoices } = await sb
+      // Pull facilities + invoices + contracts for those cities
+      const { data: facilities } = await sb
+        .from("facilities")
+        .select("id, name, city")
+        .in("city", cities);
+      const facilityIds = ((facilities ?? []) as Array<{ id: string; city: string }>).map((f) => f.id);
+      const facNameById = new Map(
+        ((facilities ?? []) as Array<{ id: string; name: string }>).map((f) => [f.id, f.name])
+      );
+      if (!facilityIds.length) {
+        rollups.push(rollup);
+        continue;
+      }
+
+      // ---- invoice_followup: action items only ----
+      const { data: openInvoices } = await sb
         .from("invoices")
-        .select("id, scheduled_pay_date, paid_date, status, amount_cents, facility_id")
+        .select("id, facility_id, scheduled_pay_date, paid_date, status, amount_cents, currency, invoice_number")
         .in("facility_id", facilityIds)
-        .in("status", ["unpaid", "scheduled"]);
-      const open = (invoices ?? []) as Array<{ id: string; scheduled_pay_date: string | null; paid_date: string | null; status: string; amount_cents: number; facility_id: string }>;
-      const overdue = open.filter((i) => i.scheduled_pay_date && i.scheduled_pay_date < today);
-      const onTimePct = open.length ? Math.round(((open.length - overdue.length) / open.length) * 100) : 100;
-      rollup.metrics.push({
-        metric_slug: "invoice_on_time",
-        raw_value: onTimePct,
-        max_score: 100,
-        score: onTimePct,
-        payload: { open: open.length, overdue: overdue.length },
-      });
-      if (overdue.length > 0) {
+        .not("status", "in", `(${NOT_SCORED_STATUSES.join(",")})`);
+
+      const upcoming = ((openInvoices ?? []) as Array<{
+        id: string; facility_id: string; scheduled_pay_date: string | null;
+        paid_date: string | null; status: string; amount_cents: number;
+        currency: string; invoice_number: string | null;
+      }>).filter((i) =>
+        i.scheduled_pay_date &&
+        i.scheduled_pay_date >= today &&
+        i.scheduled_pay_date <= fourBDOut
+      );
+
+      for (const inv of upcoming) {
+        const amt = `${inv.currency} $${(inv.amount_cents / 100).toFixed(0)}`;
+        const facName = facNameById.get(inv.facility_id) ?? "facility";
         rollup.action_items.push({
-          metric_slug: "invoice_on_time",
-          title: `${overdue.length} overdue invoice${overdue.length > 1 ? "s" : ""} at your facilities`,
-          detail: "Get the facility to issue payment or escalate to ops.",
-          severity: overdue.length > 2 ? "critical" : "high",
-          source_ref: "facilities://invoices",
+          metric_slug: "invoice_followup",
+          title: `Invoice ${inv.invoice_number ? `#${inv.invoice_number}` : ""} at ${facName} — ${amt} due ${inv.scheduled_pay_date}`,
+          detail: "Follow up with your DM to confirm payment is queued. Mark done when handled → +5 XP.",
+          severity: "high",
+          source_ref: `facilities://invoices/${inv.id}`,
+        });
+      }
+      rollup.metrics.push({
+        metric_slug: "invoice_followup",
+        raw_value: upcoming.length,
+        max_score: upcoming.length * 5,
+        score: 0,
+        payload: { upcoming: upcoming.length, action_items_created: upcoming.length },
+      });
+
+      // ---- invoice_overdue ----
+      const overdue = ((openInvoices ?? []) as Array<{ id: string; facility_id: string; scheduled_pay_date: string | null; invoice_number: string | null; amount_cents: number; currency: string }>)
+        .filter((i) => i.scheduled_pay_date && i.scheduled_pay_date < today);
+      const overdueXp = overdue.length * -3;
+
+      rollup.metrics.push({
+        metric_slug: "invoice_overdue",
+        raw_value: overdue.length,
+        max_score: 0,
+        score: overdueXp,
+        payload: { count: overdue.length },
+      });
+
+      for (const inv of overdue) {
+        const amt = `${inv.currency} $${(inv.amount_cents / 100).toFixed(0)}`;
+        const facName = facNameById.get(inv.facility_id) ?? "facility";
+        const daysLate = businessDaysBetween(new Date(inv.scheduled_pay_date!), snapshotDate);
+        rollup.action_items.push({
+          metric_slug: "invoice_overdue",
+          title: `OVERDUE: ${inv.invoice_number ? `#${inv.invoice_number}` : "invoice"} at ${facName} — ${amt}, ${daysLate} business day${daysLate === 1 ? "" : "s"} late`,
+          detail: "Costing you 3 XP/day until paid. Escalate to your DM.",
+          severity: "critical",
+          source_ref: `facilities://invoices/${inv.id}`,
         });
       }
 
-      // contract_gap_risk
+      // ---- contract_gap ----
       const { data: contracts } = await sb
         .from("contracts")
         .select("id, facility_id, effective_start, effective_end")
@@ -87,48 +136,42 @@ export const facilitiesAdapter: Adapter = {
         arr.push(c);
         byFac.set(c.facility_id, arr);
       }
-      let gaps = 0;
+
+      const gapFacs: Array<{ fid: string; expires: string }> = [];
       for (const fid of facilityIds) {
         const arr = (byFac.get(fid) ?? []).sort((a, b) => a.effective_end.localeCompare(b.effective_end));
         const current = arr.find((c) => c.effective_start <= today && c.effective_end >= today);
-        if (!current) {
-          gaps++;
-          rollup.action_items.push({
-            metric_slug: "contract_gap_risk",
-            title: "Facility has no active contract",
-            severity: "critical",
-            source_ref: `facilities://contracts/${fid}`,
-          });
-          continue;
-        }
+        if (!current) continue;
         if (current.effective_end <= thirtyAhead) {
           const hasFollowOn = arr.some(
             (c) => c.effective_start > current.effective_end && c.effective_start <= sixtyAhead
           );
-          if (!hasFollowOn) {
-            gaps++;
-            rollup.action_items.push({
-              metric_slug: "contract_gap_risk",
-              title: `Contract expires ${current.effective_end} with no renewal lined up`,
-              severity: "high",
-              source_ref: `facilities://contracts/${fid}`,
-            });
-          }
+          if (!hasFollowOn) gapFacs.push({ fid, expires: current.effective_end });
         }
       }
-      const gapScore = facilityIds.length
-        ? Math.max(0, Math.round((1 - gaps / facilityIds.length) * 100))
-        : 100;
+
+      const gapXp = gapFacs.length * -3;
       rollup.metrics.push({
-        metric_slug: "contract_gap_risk",
-        raw_value: gaps,
-        max_score: 100,
-        score: gapScore,
-        payload: { facilities: facilityIds.length, gaps },
+        metric_slug: "contract_gap",
+        raw_value: gapFacs.length,
+        max_score: 0,
+        score: gapXp,
+        payload: { count: gapFacs.length },
       });
+      for (const g of gapFacs) {
+        const facName = facNameById.get(g.fid) ?? "a facility";
+        rollup.action_items.push({
+          metric_slug: "contract_gap",
+          title: `${facName}: contract expires ${g.expires} with no renewal signed`,
+          detail: "Costing 3 XP/day. Sign or extend the contract to stop the drag.",
+          severity: "high",
+          source_ref: `facilities://contracts?facility=${g.fid}`,
+        });
+      }
 
       rollups.push(rollup);
     }
+
     return { slug: "facilities", rollups };
   },
 };
