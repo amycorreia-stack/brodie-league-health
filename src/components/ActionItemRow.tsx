@@ -72,17 +72,14 @@ export function ActionItemRow({
         </span>
       )}
 
-      {!done && !readOnly && (
+      {!done && (
         <button
           onClick={markDone}
-          disabled={busy}
+          disabled={busy || readOnly}
           className="text-xs px-2.5 py-1 rounded-md border border-glass-border bg-[var(--input-bg)] hover:bg-glass-surface-hover disabled:opacity-50 transition"
         >
           {busy ? "..." : "Done"}
         </button>
-      )}
-      {readOnly && !done && (
-        <span className="text-[10px] uppercase tracking-wider text-glass-text-tertiary px-2 py-1 font-semibold">read-only</span>
       )}
     </li>
   );
