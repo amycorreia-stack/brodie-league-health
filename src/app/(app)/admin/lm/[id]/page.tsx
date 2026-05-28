@@ -46,11 +46,37 @@ export default async function LMDrill({ params }: { params: Promise<{ id: string
   return (
     <main className="space-y-6">
       <Link href="/admin" className="text-xs text-glass-text-tertiary hover:text-glass-text">&larr; Back to admin</Link>
-      <header>
-        <h1 className="text-3xl font-semibold tracking-tight">{lmRow.full_name}</h1>
-        <p className="text-glass-text-secondary text-sm mt-1">
-          {lmRow.email} · {lmRow.location_name ?? "—"}{lmRow.district ? ` · ${lmRow.district}` : ""}
-        </p>
+      <header className="flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-3xl font-semibold tracking-tight">{lmRow.full_name}</h1>
+          <p className="text-glass-text-secondary text-sm mt-1">
+            {lmRow.email} · {lmRow.location_name ?? "—"}{lmRow.district ? ` · ${lmRow.district}` : ""}
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Link
+            href={`/admin/lm/${id}/monthly`}
+            className="text-xs px-3 py-1.5 rounded-full font-semibold"
+            style={{
+              background: "var(--accent-soft)",
+              color: "var(--accent)",
+              border: "1px solid rgba(242, 169, 0, 0.5)",
+            }}
+          >
+            Monthly review →
+          </Link>
+          <Link
+            href={`/district/prep/${id}`}
+            className="text-xs px-3 py-1.5 rounded-full font-semibold"
+            style={{
+              background: "var(--bg-raised)",
+              color: "var(--text)",
+              border: "1px solid var(--border)",
+            }}
+          >
+            1:1 prep →
+          </Link>
+        </div>
       </header>
 
       {today_xp && (

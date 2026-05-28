@@ -298,6 +298,7 @@ export default async function MyDay({
                   xpReward,
                 };
               });
+            const subMetrics = (v as { metrics?: Record<string, { score: number; max: number }> }).metrics;
             return (
               <AppCard
                 key={slug}
@@ -306,6 +307,7 @@ export default async function MyDay({
                 score={v.score}
                 max={v.max}
                 actions={appActionsForSlug}
+                metrics={subMetrics}
                 readOnly={viewingAs}
               />
             );

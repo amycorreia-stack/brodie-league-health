@@ -155,6 +155,25 @@ export async function recomputeScores(date?: Date) {
     .select("lm_id, app_id, metric_id, score, max_score")
     .eq("snapshot_date", dateStr);
 
+  // New-LM ramp: pull hired_at for each active LM. Within first 30 days,
+  // soften each per-app xp_floor by half and grant a +5 daily ramp credit.
+  const { data: lmHires } = await sb
+    .from("league_managers")
+    .select("id, hired_at")
+    .eq("active", true);
+  const RAMP_DAYS = 30;
+  const RAMP_DAILY_CREDIT = 5;
+  const rampByLm = new Map<string, { in_ramp: boolean; days_since_hire: number | null }>();
+  for (const r of (lmHires ?? []) as Array<{ id: string; hired_at: string | null }>) {
+    if (!r.hired_at) {
+      rampByLm.set(r.id, { in_ramp: false, days_since_hire: null });
+      continue;
+    }
+    const hired = new Date(r.hired_at + "T00:00:00Z").getTime();
+    const days = Math.floor((snapshotDate.getTime() - hired) / 86400000);
+    rampByLm.set(r.id, { in_ramp: days >= 0 && days < RAMP_DAYS, days_since_hire: days });
+  }
+
   const appById = new Map((apps as AppRow[] ?? []).map((a) => [a.id, a]));
   const metricById = new Map((metrics as MetricRow[] ?? []).map((m) => [m.id, m]));
 
@@ -175,22 +194,37 @@ export async function recomputeScores(date?: Date) {
     appBucket.metrics[metric.slug] = { score: Number(s.score), max: Number(s.max_score) };
   }
 
-  // apply per-app multiplier + floor
-  for (const [, agg] of byLM) {
+  // apply per-app multiplier + floor (ramp-softened for new LMs)
+  for (const [lmId, agg] of byLM) {
+    const ramp = rampByLm.get(lmId) ?? { in_ramp: false, days_since_hire: null };
     for (const [slug, bucket] of Object.entries(agg.perApp)) {
       const app = [...appById.values()].find((a) => a.slug === slug);
       if (!app) continue;
       const mult = Number(app.weight);
-      const floor = Number(app.xp_floor);
-      // multiplier scales both contribution and max; floor only caps below
+      const baseFloor = Number(app.xp_floor);
+      // Soften the floor to half during ramp window (e.g. -20 → -10)
+      const floor = ramp.in_ramp ? baseFloor / 2 : baseFloor;
       const scaled = bucket.rawXp * mult;
       const flooredScaled = Math.max(scaled, floor);
       const scaledMax = bucket.rawMax * mult;
       agg.totalXp += flooredScaled;
       agg.maxXp += scaledMax;
-      // overwrite bucket values to the scaled+floored numbers for the breakdown
       bucket.rawXp = flooredScaled;
       bucket.rawMax = scaledMax;
+    }
+    // Grant ramp credit once per day for LMs in their first 30 days
+    if (ramp.in_ramp) {
+      agg.totalXp += RAMP_DAILY_CREDIT;
+      agg.maxXp += RAMP_DAILY_CREDIT;
+      // Expose it as a virtual "ramp" app in the breakdown so the LM sees
+      // the boost on My Day and understands where the +5 came from.
+      agg.perApp["ramp"] = {
+        rawXp: RAMP_DAILY_CREDIT,
+        rawMax: RAMP_DAILY_CREDIT,
+        metrics: {
+          ramp_credit: { score: RAMP_DAILY_CREDIT, max: RAMP_DAILY_CREDIT },
+        },
+      };
     }
   }
 

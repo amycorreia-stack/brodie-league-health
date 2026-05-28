@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { scoreColor, severityDot } from "@/lib/colors";
 import { APP_DEEP_LINKS } from "@/lib/app-urls";
+import { helpForMetric } from "@/lib/metric-help";
 
 export type ActionItem = {
   id: string;
@@ -12,6 +13,8 @@ export type ActionItem = {
   resolved_at: string | null;
   xpReward: number;
 };
+
+export type MetricBreakdown = Record<string, { score: number; max: number }>;
 
 /**
  * Dense per-app tile. Each action row has its own "Lock in →" pill that
@@ -25,15 +28,18 @@ export function AppCard({
   score,
   max,
   actions,
+  metrics,
 }: {
   appSlug: string;
   appName: string;
   score: number;
   max: number;
   actions: ActionItem[];
+  metrics?: MetricBreakdown;
   readOnly?: boolean; // accepted for API compat; ignored
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [whyOpen, setWhyOpen] = useState(false);
   const pct = max > 0 ? Math.round((score / max) * 100) : 0;
   const deepLink = APP_DEEP_LINKS[appSlug];
   const openActions = actions.filter((a) => !a.resolved_at);
@@ -56,7 +62,7 @@ export function AppCard({
         {appName}
       </p>
 
-      {/* Score block */}
+      {/* Score block + Why? button */}
       <div className="flex items-baseline gap-2">
         <span className={`text-2xl font-semibold tracking-tight ${scoreColor(pct)}`}>
           {Math.round(score)}
@@ -64,7 +70,51 @@ export function AppCard({
         <span className="text-xs" style={{ color: "var(--text-mute)" }}>
           / {Math.round(max)} pts · {pct}%
         </span>
+        {metrics && Object.keys(metrics).length > 0 && (
+          <button
+            onClick={() => setWhyOpen((v) => !v)}
+            className="ml-auto text-[10px] font-semibold uppercase tracking-wider transition"
+            style={{ color: whyOpen ? "var(--accent)" : "var(--text-mute)" }}
+            aria-label="Show metric breakdown"
+          >
+            {whyOpen ? "Hide ▴" : "Why? ▾"}
+          </button>
+        )}
       </div>
+
+      {/* Per-metric breakdown — collapsible */}
+      {whyOpen && metrics && (
+        <ul
+          className="mt-3 space-y-1.5 rounded-xl p-3"
+          style={{ background: "var(--bg-sunken)", border: "1px solid var(--border)" }}
+        >
+          {Object.entries(metrics).map(([slug, m]) => {
+            const help = helpForMetric(slug);
+            const s = Number(m.score);
+            const mx = Number(m.max);
+            return (
+              <li key={slug} className="text-[11px]">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-semibold" style={{ color: "var(--text)" }}>
+                    {help.label}
+                  </span>
+                  <span
+                    className="font-mono whitespace-nowrap"
+                    style={{
+                      color: s > 0 ? "var(--ok)" : s < 0 ? "var(--error)" : "var(--text-mute)",
+                    }}
+                  >
+                    {s > 0 ? "+" : ""}{Math.round(s * 10) / 10}{mx > 0 ? ` / ${Math.round(mx)}` : ""}
+                  </span>
+                </div>
+                <p className="mt-0.5 leading-snug" style={{ color: "var(--text-mute)" }}>
+                  {help.how}
+                </p>
+              </li>
+            );
+          })}
+        </ul>
+      )}
 
       {/* Action items — each has its own Lock-in */}
       {openActions.length > 0 && (
