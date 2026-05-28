@@ -42,4 +42,5 @@ export type Profile = {
   role: Role;
   slack_user_id: string | null;
   opt_in_leaderboard: boolean;
+  tour_completed_at: string | null;
 };

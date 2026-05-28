@@ -9,6 +9,7 @@ import { TierBadge, StreakBadge, ChampionRibbon } from "@/components/Gamificatio
 import { ViewAsBanner, ViewAsSwitcher } from "@/components/ViewAs";
 import { LiveCountersStrip } from "@/components/LiveCounters";
 import { MyDayRefresh } from "@/components/MyDayRefresh";
+import { WelcomeTour } from "@/components/WelcomeTour";
 import { iconForSlug } from "@/lib/badge-icons";
 import { loadBonusProjection } from "@/lib/compensation";
 import { BonusProjectionCard } from "@/components/BonusProjection";
@@ -180,6 +181,12 @@ export default async function MyDay({
 
   return (
     <main className="space-y-8">
+      {!viewingAs && ctx.profile?.id && (
+        <WelcomeTour
+          profileId={ctx.profile.id}
+          tourCompletedAt={ctx.profile.tour_completed_at ?? null}
+        />
+      )}
       {viewingAs && <ViewAsBanner name={lm.full_name} options={switcherOptions} />}
 
       <header className="flex flex-wrap items-end justify-between gap-4">
