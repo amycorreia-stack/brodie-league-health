@@ -1,9 +1,8 @@
 /**
- * Per-app deep links for the "Lock in →" CTA on each By-app card.
+ * Per-app deep links for the "Lock in →" CTA on each action item.
  *
- * If a URL is wrong, fix it here — these are deployed Brodie apps the LM
- * needs to jump into to take action. The label is what shows on hover; the
- * URL is where they land.
+ * Verified live against `vercel project ls --scope brodie-league` 2026-05-28.
+ * If a URL is wrong, fix it here.
  */
 export type AppDeepLink = {
   url: string;
@@ -12,8 +11,8 @@ export type AppDeepLink = {
 
 export const APP_DEEP_LINKS: Record<string, AppDeepLink> = {
   crm: {
-    url: "https://brodie-crm.vercel.app",
-    label: "Open CRM pipeline →",
+    url: "https://brodie-crm-brodie-league.vercel.app",
+    label: "Open CRM →",
   },
   facilities: {
     url: "https://brodie-facilities.vercel.app",
@@ -36,7 +35,7 @@ export const APP_DEEP_LINKS: Record<string, AppDeepLink> = {
     label: "Open Content Health →",
   },
   checklist: {
-    url: "https://brodie-checklist.vercel.app",
+    url: "https://brodie-season-success-checklist-brodie-league.vercel.app",
     label: "Open Checklist →",
   },
   ops_schedule: {
