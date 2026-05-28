@@ -79,6 +79,12 @@ export default async function MyDay({
   if (!lm) {
     return (
       <main className="space-y-6">
+        {!viewingAs && ctx.profile?.id && (
+          <WelcomeTour
+            profileId={ctx.profile.id}
+            tourCompletedAt={ctx.profile.tour_completed_at ?? null}
+          />
+        )}
         {viewingAs && <ViewAsBanner name="Unknown LM" options={switcherOptions} />}
         <h1 className="text-3xl font-semibold tracking-tight">Welcome.</h1>
         <p className="text-glass-text-secondary">
