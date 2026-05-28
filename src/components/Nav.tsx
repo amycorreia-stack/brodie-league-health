@@ -13,9 +13,10 @@ const NAV_BASE: NavItem[] = [
   { href: "/achievements", label: "Trophies"    },
 ];
 const NAV_ADMIN: NavItem[] = [
-  { href: "/district",     label: "District" },
-  { href: "/admin",        label: "Admin"  },
-  { href: "/admin/roster", label: "Roster" },
+  { href: "/district",           label: "District" },
+  { href: "/district/disputes",  label: "Disputes" },
+  { href: "/admin",              label: "Admin"  },
+  { href: "/admin/roster",       label: "Roster" },
 ];
 
 const ROLE_LABELS: Record<string, string> = {

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { scoreColor, severityDot } from "@/lib/colors";
 import { APP_DEEP_LINKS } from "@/lib/app-urls";
 import { helpForMetric } from "@/lib/metric-help";
+import { DisputeButton } from "@/components/DisputeButton";
 
 export type ActionItem = {
   id: string;
@@ -29,6 +30,10 @@ export function AppCard({
   max,
   actions,
   metrics,
+  metricIdBySlug,
+  snapshotDate,
+  lmId,
+  disputable = true,
 }: {
   appSlug: string;
   appName: string;
@@ -36,6 +41,15 @@ export function AppCard({
   max: number;
   actions: ActionItem[];
   metrics?: MetricBreakdown;
+  /** metric slug → metric uuid. Required for the Dispute button to work. */
+  metricIdBySlug?: Record<string, string>;
+  /** The day this card represents. Required for dispute filing. */
+  snapshotDate?: string;
+  /** Pass when an admin is viewing-as another LM. */
+  lmId?: string;
+  /** Hide dispute UI in view-as mode so admins don't accidentally file on
+   *  someone else's behalf without thinking about it. */
+  disputable?: boolean;
   readOnly?: boolean; // accepted for API compat; ignored
 }) {
   const [expanded, setExpanded] = useState(false);
@@ -92,6 +106,8 @@ export function AppCard({
             const help = helpForMetric(slug);
             const s = Number(m.score);
             const mx = Number(m.max);
+            const metricId = metricIdBySlug?.[slug];
+            const canDispute = disputable && !!metricId && !!snapshotDate;
             return (
               <li key={slug} className="text-[11px]">
                 <div className="flex items-baseline justify-between gap-2">
@@ -110,6 +126,17 @@ export function AppCard({
                 <p className="mt-0.5 leading-snug" style={{ color: "var(--text-mute)" }}>
                   {help.how}
                 </p>
+                {canDispute && (
+                  <div className="mt-1">
+                    <DisputeButton
+                      metricId={metricId!}
+                      snapshotDate={snapshotDate!}
+                      metricLabel={help.label}
+                      appName={appName}
+                      lmId={lmId}
+                    />
+                  </div>
+                )}
               </li>
             );
           })}

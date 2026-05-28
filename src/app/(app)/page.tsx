@@ -144,6 +144,14 @@ export default async function MyDay({
   const appNameById = new Map((apps ?? []).map((a: { id: string; name: string }) => [a.id, a.name]));
   const appNameBySlug = new Map((apps ?? []).map((a: { slug: string; name: string }) => [a.slug, a.name]));
 
+  // Slug → uuid for every metric. AppCard needs this so its Dispute button
+  // can POST a metric_id instead of just a slug. One small query, cached
+  // implicitly by render.
+  const { data: allMetrics } = await dataClient.from("metrics").select("id, slug");
+  const metricIdBySlug = Object.fromEntries(
+    ((allMetrics ?? []) as Array<{ id: string; slug: string }>).map((m) => [m.slug, m.id])
+  );
+
   const { data: recentUnlocks } = await dataClient
     .from("lm_achievements")
     .select("unlocked_at, achievements!inner(slug, name, icon)")
@@ -321,6 +329,10 @@ export default async function MyDay({
                 max={v.max}
                 actions={appActionsForSlug}
                 metrics={subMetrics}
+                metricIdBySlug={metricIdBySlug}
+                snapshotDate={today}
+                lmId={viewingAs ? lmId : undefined}
+                disputable={!viewingAs}
                 readOnly={viewingAs}
               />
             );

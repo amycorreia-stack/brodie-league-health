@@ -26,9 +26,9 @@ const STEPS: Step[] = [
       "Green chip = XP you can earn by doing the thing. Red chip = XP you're losing each day until you fix it. Click 'Lock in →' on any row to jump straight to the source app and resolve it. Your score updates after the next sync.",
   },
   {
-    title: "Refresh anytime + see the data behind everything.",
+    title: "Refresh anytime + dispute what's wrong.",
     body:
-      "Hit the ↻ Refresh button to pull fresh numbers on demand. Hit 'Why?' on a tile for the math. Hit the dispute link (coming soon) if something looks wrong. The system is meant to be challenged.",
+      "Hit the ↻ Refresh button to pull fresh numbers on demand. Hit 'Why?' on any tile for the math, then 'Dispute' if a metric looks wrong. Your DM sees it in their queue and decides. The system is meant to be challenged.",
   },
 ];
 
