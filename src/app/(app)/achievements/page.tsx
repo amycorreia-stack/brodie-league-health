@@ -74,7 +74,7 @@ export default async function AchievementsPage({
         </p>
       </header>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
         {achievements.map((a) => {
           const unlocked = unlockedIds.has(a.id);
           const when = unlockedDates.get(a.id);
@@ -82,38 +82,65 @@ export default async function AchievementsPage({
           return (
             <div
               key={a.id}
-              className={`rounded-2xl border p-4 flex gap-3 transition`}
+              className="rounded-2xl border p-4 sm:p-5 flex flex-col items-center text-center transition"
               style={{
                 borderColor: unlocked ? "rgba(242, 169, 0, 0.5)" : "var(--border)",
                 background: unlocked ? "var(--accent-soft)" : "var(--bg-raised)",
+                boxShadow: unlocked ? "0 6px 20px rgba(242, 169, 0, 0.15)" : "none",
               }}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={iconSrc}
                 alt={a.name}
-                width={56}
-                height={56}
+                width={140}
+                height={140}
                 style={{
-                  width: 56,
-                  height: 56,
+                  width: "100%",
+                  maxWidth: 140,
+                  height: "auto",
+                  aspectRatio: "1 / 1",
                   objectFit: "contain",
-                  filter: unlocked ? "none" : "grayscale(1)",
-                  opacity: unlocked ? 1 : 0.4,
-                  flexShrink: 0,
+                  filter: unlocked ? "drop-shadow(0 4px 12px rgba(242, 169, 0, 0.35))" : "grayscale(1)",
+                  opacity: unlocked ? 1 : 0.35,
                 }}
               />
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold" style={{ color: unlocked ? "var(--text)" : "var(--text-mute)" }}>
-                  {a.name}
+              <p
+                className="text-sm sm:text-base font-semibold mt-3"
+                style={{ color: unlocked ? "var(--text)" : "var(--text-mute)" }}
+              >
+                {a.name}
+              </p>
+              <p
+                className="text-[11px] sm:text-xs mt-1 leading-snug"
+                style={{ color: "var(--text-mute)" }}
+              >
+                {a.description}
+              </p>
+              {unlocked && when && (
+                <p
+                  className="text-[10px] uppercase tracking-wider font-semibold mt-3 px-2 py-1 rounded-full"
+                  style={{
+                    color: "var(--accent)",
+                    background: "var(--bg-raised)",
+                    border: "1px solid rgba(242, 169, 0, 0.4)",
+                  }}
+                >
+                  Unlocked {new Date(when).toLocaleDateString()}
                 </p>
-                <p className="text-xs mt-0.5" style={{ color: "var(--text-mute)" }}>{a.description}</p>
-                {unlocked && when && (
-                  <p className="text-[10px] uppercase tracking-wider font-semibold mt-2" style={{ color: "var(--accent)" }}>
-                    Unlocked {new Date(when).toLocaleDateString()}
-                  </p>
-                )}
-              </div>
+              )}
+              {!unlocked && (
+                <p
+                  className="text-[10px] uppercase tracking-wider font-semibold mt-3 px-2 py-1 rounded-full"
+                  style={{
+                    color: "var(--text-mute)",
+                    background: "var(--bg-sunken)",
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  Locked
+                </p>
+              )}
             </div>
           );
         })}
