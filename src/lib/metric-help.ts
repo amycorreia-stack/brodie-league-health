@@ -34,16 +34,16 @@ export const METRIC_HELP: Record<string, { label: string; how: string }> = {
 
   // Ref payroll
   ref_payroll_on_time: {
-    label: "Payroll on time",
-    how: "+15 XP one-time on Monday if both submitted AND DM-approved before 12pm ET.",
+    label: "Payroll submitted",
+    how: "+15 XP if done by Sunday 11pm ET. +5 XP if done by Monday noon ET.",
   },
   ref_payroll_late_hit: {
-    label: "Missed Monday noon",
-    how: "-15 XP one-time when Monday noon ET passes without both submit + approve done.",
+    label: "Payroll late",
+    how: "-5 by Monday 6pm ET, -10 by midnight, -15 LOCKED if not done by Tuesday. No further deductions after that — the period closes.",
   },
   ref_payroll_drag: {
-    label: "Ongoing payroll drag",
-    how: "-3 XP per weekday after deadline while the submission is still unfinished.",
+    label: "(retired)",
+    how: "Replaced by the bounded late_hit penalty. Always 0 now.",
   },
 
   // Training
