@@ -1,5 +1,6 @@
 import { requireUser } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import { ymd, daysAgo } from "@/lib/source-apps/util";
 import { scoreColor } from "@/lib/colors";
 import { TIER_ICON, TIER_LABEL, type Tier } from "@/lib/scoring/gamification";
@@ -18,8 +19,9 @@ export default async function Leaderboard({
 }: {
   searchParams: Promise<{ scope?: string }>;
 }) {
-  await requireUser();
+  const ctx = await requireUser();
   const sb = await createClient();
+  const isAdmin = ctx.profile?.role === "dm" || ctx.profile?.role === "super_admin";
   const { scope: scopeRaw } = await searchParams;
   const scope: Scope =
     scopeRaw === "yesterday" || scopeRaw === "all_time" ? (scopeRaw as Scope) : "today";
@@ -81,8 +83,14 @@ export default async function Leaderboard({
     }));
   } else {
     // All-time: sum total_xp across every daily snapshot per LM, then join
-    // roster info. We cap at 50k snapshot rows for safety — plenty for now.
-    const { data: totals } = await sb
+    // roster info. Uses admin client to dodge RLS quirks on unfiltered
+    // SELECT (the per-snapshot_date queries above use !inner joins so RLS
+    // resolves cleanly, but an unfiltered query was returning empty).
+    //
+    // Opt-in filtering: enforced in code below. Non-admins only see opt-in
+    // LMs + their own row. Matches the RLS semantics on lm_xp_totals.
+    const admin = createAdminClient();
+    const { data: totals } = await admin
       .from("lm_xp_totals")
       .select("lm_id, total_xp, max_xp")
       .limit(50000);
@@ -97,23 +105,48 @@ export default async function Leaderboard({
 
     const lmIds = Array.from(byLm.keys());
     if (lmIds.length) {
-      const { data: lmInfo } = await sb
+      // Pull roster + opt-in via admin client too (so all-time view stays
+      // consistent regardless of who's looking).
+      const { data: lmInfo } = await admin
         .from("league_managers")
-        .select("id, full_name, location_name, district, current_streak, tier, avg_30d")
+        .select("id, full_name, location_name, district, current_streak, tier, avg_30d, email")
         .in("id", lmIds);
-      const lmById = new Map(
-        ((lmInfo ?? []) as Array<{
-          id: string;
-          full_name: string;
-          location_name: string | null;
-          district: string | null;
-          current_streak: number;
-          tier: Tier;
-          avg_30d: number | null;
-        }>).map((l) => [l.id, l])
-      );
+      type LMInfo = {
+        id: string;
+        full_name: string;
+        location_name: string | null;
+        district: string | null;
+        current_streak: number;
+        tier: Tier;
+        avg_30d: number | null;
+        email: string;
+      };
+
+      // For non-admins, get the opt-in set + the caller's own LM id.
+      let visibleIds: Set<string> | null = null;
+      if (!isAdmin) {
+        const { data: optInProfiles } = await admin
+          .from("profiles")
+          .select("email")
+          .eq("opt_in_leaderboard", true);
+        const optInEmails = new Set(
+          ((optInProfiles ?? []) as Array<{ email: string }>).map((p) => p.email.toLowerCase())
+        );
+        visibleIds = new Set(
+          ((lmInfo ?? []) as LMInfo[])
+            .filter(
+              (l) =>
+                optInEmails.has(l.email.toLowerCase()) ||
+                l.email.toLowerCase() === (ctx.user.email ?? "").toLowerCase()
+            )
+            .map((l) => l.id)
+        );
+      }
+
+      const lmById = new Map(((lmInfo ?? []) as LMInfo[]).map((l) => [l.id, l]));
       rows = lmIds
         .map((id): Row | null => {
+          if (visibleIds && !visibleIds.has(id)) return null;
           const agg = byLm.get(id)!;
           const info = lmById.get(id);
           if (!info) return null;
