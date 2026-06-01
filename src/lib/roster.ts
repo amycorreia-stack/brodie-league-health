@@ -61,5 +61,31 @@ export async function syncRoster(): Promise<{ synced: number; error?: string }> 
 
   const { error: upErr } = await sb.from("league_managers").upsert(rows, { onConflict: "email" });
   if (upErr) return { synced: 0, error: upErr.message };
+
+  // Auto-link profile_id for any LM whose email matches a logged-in profile.
+  // This keeps "you logged in → you see your page" robust without anyone
+  // having to manually wire the FK. Idempotent: only touches rows where
+  // profile_id is still null.
+  try {
+    const { data: profiles } = await sb.from("profiles").select("id, email");
+    const profileByEmail = new Map(
+      ((profiles ?? []) as Array<{ id: string; email: string }>).map((p) => [
+        p.email.toLowerCase(),
+        p.id,
+      ])
+    );
+    const { data: unlinked } = await sb
+      .from("league_managers")
+      .select("id, email")
+      .is("profile_id", null);
+    for (const lm of (unlinked ?? []) as Array<{ id: string; email: string }>) {
+      const pid = profileByEmail.get(lm.email.toLowerCase());
+      if (!pid) continue;
+      await sb.from("league_managers").update({ profile_id: pid }).eq("id", lm.id);
+    }
+  } catch {
+    // backfill is best-effort; never block the sync on it
+  }
+
   return { synced: rows.length };
 }

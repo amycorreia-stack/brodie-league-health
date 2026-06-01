@@ -71,11 +71,75 @@ export default async function MyDay({
       .maybeSingle();
     lm = (data ?? null) as LMRow | null;
   } else {
-    const { data } = await sb
+    // Self lookup. Use admin client so RLS edge cases never block a user
+    // from seeing their OWN dashboard. Try multiple strategies because real
+    // emails are messy:
+    //   1. exact email match on profile.id → league_managers.profile_id
+    //   2. exact email match (lowercase)
+    //   3. case-insensitive email (ilike)
+    //   4. last-ditch: re-sync the roster from CRM and try again — this
+    //      handles "LM was added to CRM but cron hasn't run since"
+    const admin = createAdminClient();
+    const userEmail = (ctx.user.email ?? "").toLowerCase();
+    const cols =
+      "id, full_name, email, location_name, district, current_streak, longest_streak, tier, avg_30d, profile_id";
+
+    // Strategy 1: by profile_id (if it's been linked)
+    let { data } = await admin
       .from("league_managers")
-      .select("id, full_name, email, location_name, district, current_streak, longest_streak, tier, avg_30d")
-      .eq("email", (ctx.user.email ?? "").toLowerCase())
+      .select(cols)
+      .eq("profile_id", ctx.user.id)
       .maybeSingle();
+
+    // Strategy 2: by email exact (already lowercase in DB)
+    if (!data && userEmail) {
+      const r2 = await admin
+        .from("league_managers")
+        .select(cols)
+        .eq("email", userEmail)
+        .maybeSingle();
+      data = r2.data;
+    }
+
+    // Strategy 3: case-insensitive ilike
+    if (!data && userEmail) {
+      const r3 = await admin
+        .from("league_managers")
+        .select(cols)
+        .ilike("email", userEmail)
+        .maybeSingle();
+      data = r3.data;
+    }
+
+    // Strategy 4: self-heal. Sync the roster from CRM and retry once.
+    // This is what "have them have active pages and just sync with the CRM
+    // every day" means in practice — if you're a CRM manager and you log
+    // in before the daily cron has caught you, we pull you in on the spot.
+    if (!data && userEmail) {
+      try {
+        const { syncRoster } = await import("@/lib/roster");
+        await syncRoster();
+        const r4 = await admin
+          .from("league_managers")
+          .select(cols)
+          .ilike("email", userEmail)
+          .maybeSingle();
+        data = r4.data;
+      } catch {
+        // sync failure shouldn't block the page; fall through to "no LM" state
+      }
+    }
+
+    // Backfill the missing profile_id link so subsequent lookups hit
+    // strategy 1 instantly.
+    if (data && !(data as { profile_id: string | null }).profile_id) {
+      admin
+        .from("league_managers")
+        .update({ profile_id: ctx.user.id })
+        .eq("id", (data as { id: string }).id)
+        .then(() => {}, () => {});
+    }
+
     lm = (data ?? null) as LMRow | null;
   }
 
