@@ -53,7 +53,7 @@ export default async function Leaderboard({
         "lm_id, total_xp, max_xp, pct, league_managers!inner(full_name, location_name, district, current_streak, tier, avg_30d)"
       )
       .eq("snapshot_date", date)
-      .order("total_xp", { ascending: false })
+      .order("pct", { ascending: false })
       .limit(100);
     rows = ((data ?? []) as unknown as Array<{
       lm_id: string;
@@ -166,7 +166,7 @@ export default async function Leaderboard({
           };
         })
         .filter((x): x is Row => x !== null)
-        .sort((a, b) => b.total_xp - a.total_xp)
+        .sort((a, b) => b.pct - a.pct)
         .map((r, i) => ({ ...r, rank: i + 1 }))
         .slice(0, 100);
     }
@@ -204,22 +204,22 @@ export default async function Leaderboard({
       </div>
 
       <div className="rounded-2xl border border-glass-border bg-glass-surface overflow-x-auto">
-        <table className="w-full text-sm min-w-[640px]">
+        <table className="w-full text-sm min-w-[560px]">
           <thead className="bg-glass-surface-hover text-glass-text-tertiary uppercase text-[10px] tracking-wider">
             <tr>
               <th className="text-left p-3 font-semibold w-12">Rank</th>
               <th className="text-left p-3 font-semibold">LM</th>
               <th className="text-left p-3 font-semibold">Tier</th>
               <th className="text-left p-3 font-semibold">Streak</th>
-              <th className="text-right p-3 font-semibold">XP</th>
-              <th className="text-right p-3 font-semibold">
-                {scope === "all_time" ? "All-time %" : `${SCOPE_LABEL[scope]} %`}
-              </th>
+              <th className="text-right p-3 font-semibold">Score / 100</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
-              const pct = Math.round(row.pct);
+              // Normalized 0-100 score. Every LM has the same max potential
+              // regardless of how many locations / pay periods / etc they have,
+              // because we use pct (already normalized per-LM) as the score.
+              const score = Math.max(0, Math.min(100, Math.round(row.pct)));
               const isChamp = row.rank === 1;
               return (
                 <tr
@@ -250,16 +250,16 @@ export default async function Leaderboard({
                       <span className="text-glass-text-tertiary">—</span>
                     )}
                   </td>
-                  <td className="p-3 text-right">
-                    {Math.round(row.total_xp)} / {Math.round(row.max_xp)}
+                  <td className={`p-3 text-right font-semibold text-base ${scoreColor(score)}`}>
+                    {score}
+                    <span className="text-glass-text-tertiary text-xs font-normal"> / 100</span>
                   </td>
-                  <td className={`p-3 text-right font-semibold ${scoreColor(pct)}`}>{pct}%</td>
                 </tr>
               );
             })}
             {rows.length === 0 && (
               <tr>
-                <td colSpan={6} className="p-6 text-center text-glass-text-tertiary">
+                <td colSpan={5} className="p-6 text-center text-glass-text-tertiary">
                   {scope === "today" && "No scores yet today."}
                   {scope === "yesterday" && "No scores recorded yesterday."}
                   {scope === "all_time" && "No history yet."}
