@@ -35,7 +35,7 @@ export const APP_DEEP_LINKS: Record<string, AppDeepLink> = {
     label: "Open Content Health →",
   },
   checklist: {
-    url: "https://brodie-season-success-checklist-brodie-league.vercel.app",
+    url: "https://brodie-season-success-checklist.vercel.app",
     label: "Open Checklist →",
   },
   ops_schedule: {
