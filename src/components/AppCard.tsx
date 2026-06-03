@@ -28,9 +28,18 @@ function resolveSourceRef(sourceRef: string | null | undefined, fallback: string
   if (!m) return fallback;
   const [, app, rest] = m;
   switch (app) {
-    case "feedback":
-      // `feedback://responses/<uuid>` → https://brodie-feedback.vercel.app/responses/<uuid>
-      return `https://brodie-feedback.vercel.app/${rest}`;
+    case "feedback": {
+      // brodie-feedback doesn't expose a per-response route yet (`/responses/<id>`
+      // 404s). Land on the main /feedback dashboard with the response id as a
+      // query param so the LM at least starts in the right app, and if/when
+      // brodie-feedback adds `?response=<id>` handling, this URL auto-resolves
+      // straight to the right submission.
+      const idMatch = rest.match(/responses\/(.+)$/);
+      const id = idMatch ? idMatch[1] : "";
+      return id
+        ? `https://brodie-feedback.vercel.app/feedback?response=${encodeURIComponent(id)}`
+        : "https://brodie-feedback.vercel.app/feedback";
+    }
     // Other adapters use source_ref formats like `ref_payroll://submissions?...`
     // — those have query strings, so build the URL directly:
     case "ref_payroll":
