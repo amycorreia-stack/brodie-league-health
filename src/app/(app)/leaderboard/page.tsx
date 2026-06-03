@@ -47,15 +47,16 @@ export default async function Leaderboard({
 
   if (scope === "today" || scope === "yesterday") {
     const date = scope === "today" ? today : yesterday;
-    // active=true on the joined league_managers row excludes inactive LMs
-    // (Jamie, etc) from the daily ranking even if they have a snapshot.
-    const { data } = await sb
+    // Use admin client for the same reason as all-time: filtering on a
+    // joined relation via the user-scoped client is unreliable under RLS.
+    // We filter inactive LMs out in code instead.
+    const admin = createAdminClient();
+    const { data } = await admin
       .from("lm_xp_totals")
       .select(
         "lm_id, total_xp, max_xp, pct, league_managers!inner(full_name, location_name, district, current_streak, tier, avg_30d, active)"
       )
       .eq("snapshot_date", date)
-      .eq("league_managers.active", true)
       .order("pct", { ascending: false })
       .limit(100);
     rows = ((data ?? []) as unknown as Array<{
@@ -70,8 +71,11 @@ export default async function Leaderboard({
         current_streak: number;
         tier: Tier;
         avg_30d: number | null;
+        active: boolean;
       };
-    }>).map((r, i) => ({
+    }>)
+      .filter((r) => r.league_managers.active)
+      .map((r, i) => ({
       lm_id: r.lm_id,
       full_name: r.league_managers.full_name,
       location_name: r.league_managers.location_name,
