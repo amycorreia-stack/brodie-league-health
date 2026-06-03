@@ -41,26 +41,33 @@ export async function loadLiveCounters(lmEmail: string): Promise<LiveCounters> {
     .eq("lead_type", "current_player")
     .in("location_id", locIds);
 
-  // Teams: distinct team_name from those leads. PostgREST doesn't expose
-  // count(distinct), so we fetch team_name only (no other columns to keep
-  // payload small) and dedupe in JS. Limit to 5000 just in case any
-  // location has runaway data; well above realistic team counts.
-  const { data: teamRows } = await sb
-    .from("leads")
-    .select("team_name")
-    .eq("lead_type", "current_player")
+  // Teams: count rows in team_roster_snapshot at this LM's locations for
+  // the most recent season per location. This is the source-of-truth for
+  // actually-registered teams (each row = one team with captain + roster).
+  // The old impl counted distinct team_name strings from leads, which was
+  // free-text and inflated/deflated the number wildly.
+  const { data: snapshot } = await sb
+    .from("team_roster_snapshot")
+    .select("team_id, location_id, season, fetched_at")
     .in("location_id", locIds)
-    .not("team_name", "is", null)
-    .limit(5000);
-  const teamSet = new Set(
-    ((teamRows ?? []) as Array<{ team_name: string | null }>)
-      .map((r) => r.team_name)
-      .filter((n): n is string => !!n && n.trim().length > 0)
-  );
+    .order("fetched_at", { ascending: false })
+    .limit(10000);
+
+  // For each location, take the most recent season (by fetched_at) and
+  // count unique teams in it. Auto-handles per-location season rollover.
+  type Snap = { team_id: string; location_id: string; season: string; fetched_at: string };
+  const seasonByLoc = new Map<string, string>();
+  for (const s of (snapshot ?? []) as Snap[]) {
+    if (!seasonByLoc.has(s.location_id)) seasonByLoc.set(s.location_id, s.season);
+  }
+  const uniqueTeams = new Set<string>();
+  for (const s of (snapshot ?? []) as Snap[]) {
+    if (seasonByLoc.get(s.location_id) === s.season) uniqueTeams.add(s.team_id);
+  }
 
   return {
     registered_athletes: athleteCount ?? 0,
-    registered_teams: teamSet.size,
+    registered_teams: uniqueTeams.size,
     source_available: true,
   };
 }
