@@ -13,7 +13,32 @@ export type ActionItem = {
   severity: string;
   resolved_at: string | null;
   xpReward: number;
+  source_ref?: string | null;
 };
+
+/**
+ * Convert an adapter-emitted source_ref (e.g. `feedback://responses/abc-123`)
+ * into a real https URL that deep-links into the right source app at the
+ * right resource. Falls back to the app's base deep link when there's no
+ * matching pattern.
+ */
+function resolveSourceRef(sourceRef: string | null | undefined, fallback: string | null): string | null {
+  if (!sourceRef) return fallback;
+  const m = sourceRef.match(/^([a-z_]+):\/\/(.+)$/i);
+  if (!m) return fallback;
+  const [, app, rest] = m;
+  switch (app) {
+    case "feedback":
+      // `feedback://responses/<uuid>` → https://brodie-feedback.vercel.app/responses/<uuid>
+      return `https://brodie-feedback.vercel.app/${rest}`;
+    // Other adapters use source_ref formats like `ref_payroll://submissions?...`
+    // — those have query strings, so build the URL directly:
+    case "ref_payroll":
+      return `https://brodie-ref-payroll.vercel.app/${rest}`;
+    default:
+      return fallback;
+  }
+}
 
 export type MetricBreakdown = Record<string, { score: number; max: number }>;
 
@@ -163,7 +188,11 @@ export function AppCard({
       {openActions.length > 0 && (
         <ul className="mt-3 space-y-1.5">
           {visibleActions.map((a) => (
-            <ActionItemInline key={a.id} item={a} appLink={deepLink?.url ?? null} />
+            <ActionItemInline
+              key={a.id}
+              item={a}
+              appLink={resolveSourceRef(a.source_ref, deepLink?.url ?? null)}
+            />
           ))}
           {!expanded && hiddenCount > 0 && (
             <li>

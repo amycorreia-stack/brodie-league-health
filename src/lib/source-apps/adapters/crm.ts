@@ -37,9 +37,16 @@ export const crmAdapter: Adapter = {
     const sb = sourceClient("crm")!;
 
     const todayStr = ymd(snapshotDate);
-    const dayStart = todayStr + "T00:00:00Z";
-    const dayEnd = todayStr + "T23:59:59Z";
-    const cutoff24h = new Date(snapshotDate.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    // Score window is the TRAILING 24 hours ending at snapshotDate, not the
+    // calendar-day midnight-to-midnight window. Cron fires at 5am ET — if we
+    // score "today" then, every LM sees 0/60 because their work day hasn't
+    // started. With a rolling window the morning score reflects what they
+    // actually did over the last day, which is the score they earned.
+    const windowEnd = snapshotDate.toISOString();
+    const windowStart = new Date(snapshotDate.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    const dayStart = windowStart;
+    const dayEnd = windowEnd;
+    const cutoff24h = windowStart;
 
     const { data: managers, error: mErr } = await sb
       .from("managers")

@@ -224,7 +224,7 @@ export default async function MyDay({
 
   const { data: actions } = await dataClient
     .from("daily_action_items")
-    .select("id, title, detail, severity, app_id, resolved_at, metrics:metric_id(slug, scoring_rule)")
+    .select("id, title, detail, severity, app_id, resolved_at, source_ref, metrics:metric_id(slug, scoring_rule)")
     .eq("lm_id", lmId)
     .eq("snapshot_date", today)
     .order("severity", { ascending: true });
@@ -444,6 +444,7 @@ export default async function MyDay({
                   severity: string;
                   app_id: string;
                   resolved_at: string | null;
+                  source_ref: string | null;
                   metrics: { slug: string; scoring_rule: { type?: string; xp_per_unit?: number; xp?: number } } | null;
                 };
                 const rule = it.metrics?.scoring_rule ?? {};
@@ -461,6 +462,7 @@ export default async function MyDay({
                   severity: it.severity,
                   resolved_at: it.resolved_at,
                   xpReward,
+                  source_ref: it.source_ref,
                 };
               });
             const subMetrics = (v as { metrics?: Record<string, { score: number; max: number }> }).metrics;
