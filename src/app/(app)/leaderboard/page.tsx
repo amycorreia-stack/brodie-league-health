@@ -6,6 +6,11 @@ import { scoreColor } from "@/lib/colors";
 import { TIER_ICON, TIER_LABEL, type Tier } from "@/lib/scoring/gamification";
 import Link from "next/link";
 
+// Force this page to re-render on every request — the leaderboard reflects
+// live snapshot data and shouldn't be served from Next.js's render cache.
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 type Scope = "today" | "yesterday" | "all_time";
 
 const SCOPE_LABEL: Record<Scope, string> = {
